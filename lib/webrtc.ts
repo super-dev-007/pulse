@@ -1,3 +1,5 @@
+import { FrostedVideo } from "@/lib/frost";
+
 export type DescType = "offer" | "answer" | "ice";
 const CONTROLS = [
   "video-request",
@@ -5,6 +7,9 @@ const CONTROLS = [
   "video-decline",
   "video-end",
   "typing",
+  // Mutual Reveal: "I'm ready to be seen" / "frost me again".
+  "reveal-on",
+  "reveal-off",
 ] as const;
 export type PeerControl = (typeof CONTROLS)[number];
 
@@ -35,7 +40,9 @@ export class PeerSession {
   private readonly polite: boolean;
   private makingOffer = false;
   private ignoreOffer = false;
-  private localStream: MediaStream | null = null;
+  private localStream: MediaStream | null = null; // raw camera + mic
+  private frost: FrostedVideo | null = null;
+  private videoSender: RTCRtpSender | null = null;
   private closed = false;
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -190,17 +197,35 @@ export class PeerSession {
     }
   }
 
+  // Returns the raw local stream for our own preview. What the peer receives
+  // is a frosted copy of the camera until setRevealed(true).
   async startVideo(): Promise<MediaStream> {
     if (!this.localStream) {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
+      const raw = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
-      for (const track of this.localStream.getTracks()) {
-        this.pc.addTrack(track, this.localStream);
+      this.localStream = raw;
+      for (const track of raw.getAudioTracks()) this.pc.addTrack(track, raw);
+      const [camera] = raw.getVideoTracks();
+      if (camera) {
+        this.frost = new FrostedVideo(camera);
+        this.videoSender = this.pc.addTrack(this.frost.track, raw);
       }
     }
     return this.localStream;
+  }
+
+  // Swap what the peer receives between the clear camera and its frosted
+  // copy. Same kind of track, so no renegotiation — it's instant.
+  async setRevealed(on: boolean) {
+    const camera = this.localStream?.getVideoTracks()[0];
+    if (!this.videoSender || !this.frost || !camera) return;
+    try {
+      await this.videoSender.replaceTrack(on ? camera : this.frost.track);
+    } catch (err) {
+      console.warn("[pulse] reveal switch failed", err);
+    }
   }
 
   // Mute without renegotiating: a disabled track sends silence / black.
@@ -215,6 +240,7 @@ export class PeerSession {
   stopVideo() {
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) track.stop();
+      this.frost?.stop();
       for (const sender of this.pc.getSenders()) {
         if (sender.track) {
           try {
@@ -223,6 +249,8 @@ export class PeerSession {
         }
       }
       this.localStream = null;
+      this.frost = null;
+      this.videoSender = null;
     }
   }
 

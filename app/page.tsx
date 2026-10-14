@@ -54,6 +54,9 @@ export default function Home() {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [peerTyping, setPeerTyping] = useState(false);
+  // Mutual Reveal: has each side opted in to being seen clearly?
+  const [revealMe, setRevealMe] = useState(false);
+  const [revealThem, setRevealThem] = useState(false);
   // Sound preference survives reloads (the only thing we remember).
   const [soundOn, setSoundOn] = useState(() => {
     try {
@@ -128,12 +131,8 @@ export default function Home() {
     if (typingTimer.current) clearTimeout(typingTimer.current);
     peerRef.current?.close();
     peerRef.current = null;
-    setLocalStream(null);
-    setRemoteStream(null);
-    setMicOn(true);
-    setCamOn(true);
+    clearVideo();
     setPeerTyping(false);
-    setVideo("none");
     setMessages([]);
     setConn({ kind: "idle" });
     if (message) notify(message);
@@ -231,13 +230,30 @@ export default function Home() {
         break;
       case "video-end":
         ps?.stopVideo();
-        setLocalStream(null);
-        setRemoteStream(null);
-        setMicOn(true);
-        setCamOn(true);
-        setVideo("none");
+        clearVideo();
+        break;
+      // Mutual Reveal: the other side opted in / frosted themselves again.
+      case "reveal-on":
+        // The accepter's video goes live first, so this can arrive while
+        // our camera is still starting — keep it rather than drop it.
+        if (videoRef.current !== "none") setRevealThem(true);
+        break;
+      case "reveal-off":
+        setRevealThem(false);
         break;
     }
+  }
+
+  // Back to a text-only conversation (or nothing): no streams, everything
+  // frosted again for next time.
+  function clearVideo() {
+    setLocalStream(null);
+    setRemoteStream(null);
+    setMicOn(true);
+    setCamOn(true);
+    setRevealMe(false);
+    setRevealThem(false);
+    setVideo("none");
   }
 
   function requestConnection(peerId: string) {
@@ -333,11 +349,15 @@ export default function Home() {
     const ps = peerRef.current;
     ps?.stopVideo();
     ps?.sendControl("video-end");
-    setLocalStream(null);
-    setRemoteStream(null);
-    setMicOn(true);
-    setCamOn(true);
-    setVideo("none");
+    clearVideo();
+  }
+
+  // "I'm ready to be seen" — or frost me again. Clear video flows only while
+  // both sides are ready (see the effect below).
+  function toggleReveal() {
+    const on = !revealMe;
+    setRevealMe(on);
+    peerRef.current?.sendControl(on ? "reveal-on" : "reveal-off");
   }
 
   function toggleMic() {
@@ -470,6 +490,13 @@ export default function Home() {
     };
   }, [phase]);
 
+  // Send the clear camera only while both have opted in; the moment either
+  // frosts again, go back to the frosted copy.
+  const revealed = revealMe && revealThem;
+  useEffect(() => {
+    void peerRef.current?.setRevealed(revealed);
+  }, [revealed]);
+
   // Someone's calling while the tab is in the background: blink the title.
   const ringing = conn.kind === "incoming" || video === "incoming";
   useEffect(() => {
@@ -601,8 +628,11 @@ export default function Home() {
               remoteStream={remoteStream}
               micOn={micOn}
               camOn={camOn}
+              revealMe={revealMe}
+              revealThem={revealThem}
               onToggleMic={toggleMic}
               onToggleCam={toggleCam}
+              onToggleReveal={toggleReveal}
               onEnd={endVideo}
             />
           )}
