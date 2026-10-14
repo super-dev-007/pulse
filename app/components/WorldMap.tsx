@@ -135,6 +135,9 @@ export default function WorldMap({
             .setLngLat([peer.lng, peer.lat])
             .addTo(map);
           markers.set(peer.id, marker);
+        } else {
+          // A peer that re-joined gets a fresh offset — follow it.
+          marker.setLngLat([peer.lng, peer.lat]);
         }
         marker.getElement().style.opacity = peer.busy ? "0.35" : "1";
       }

@@ -35,6 +35,7 @@ export default function Home() {
   const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
     null,
   );
+  const locationRef = useRef(myLocation);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -309,6 +310,10 @@ export default function Home() {
       try {
         const data = await poll(sessionId);
         if (!active) return;
+        // We were reaped while away (a backgrounded tab's timers get
+        // throttled past STALE_MS) — put ourselves back on the map.
+        const loc = locationRef.current;
+        if (!data.present && loc) await join(sessionId, loc.lat, loc.lng);
         setPeers(data.peers);
         for (const s of data.signals) processSignalRef.current(s);
       } catch {}
@@ -338,6 +343,7 @@ export default function Home() {
   }, [sessionId, phase]);
 
   async function handleReady(lat: number, lng: number) {
+    locationRef.current = { lat, lng };
     setMyLocation({ lat, lng });
     await join(sessionId, lat, lng);
     setPhase("live");

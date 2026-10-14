@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
   // 1) Heartbeat — refresh lastSeen for the caller only. (An empty `where`
   // here refreshed *every* row, so nobody ever went stale while anyone was
   // still polling.)
-  await prisma.presence.updateMany({
+  const heartbeat = await prisma.presence.updateMany({
     where: { id },
     data: { lastSeen: new Date(now) },
   });
@@ -66,6 +66,9 @@ export async function GET(request: NextRequest) {
   }
 
   const response: PollResponse = {
+    // No row to heartbeat means the caller was reaped while away (e.g. a
+    // backgrounded tab whose timers were throttled) — the client re-joins.
+    present: heartbeat.count > 0,
     peers: peers.map((p) => ({
       id: p.id,
       lat: p.lat,
