@@ -19,10 +19,11 @@ async function enter(browser: Browser, geolocation: typeof LISBON) {
   });
   const page = await context.newPage();
   await page.goto("/");
-  // The session id travels on every poll; grab it to find this user's dot.
-  const firstPoll = page.waitForRequest(/\/api\/poll\?id=/);
+  // The server assigns the public session id on join; grab it to find this
+  // user's dot on the other user's map.
+  const joined = page.waitForResponse(/\/api\/join$/);
   await page.getByRole("button", { name: "Enter Pulse" }).click();
-  const id = new URL((await firstPoll).url()).searchParams.get("id")!;
+  const { id } = (await (await joined).json()) as { id: string };
   await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
   return { context, page, id };
 }

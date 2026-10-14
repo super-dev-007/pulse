@@ -2,33 +2,39 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import { releasePartners } from "@/lib/presence-server";
+import { bearerToken, hashToken, isNotFound, unauthorized } from "@/lib/session";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/poll?id= — the single endpoint that drives the live map.
-// It (1) heartbeats the caller, (2) reaps stale presence + orphan signals,
-// (3) returns the filtered online peers, and (4) drains this user's mailbox.
-export async function GET(request: NextRequest) {
-  const params = request.nextUrl.searchParams;
-  const id = params.get("id");
-
-  if (!id) {
-    return Response.json({ error: "missing id" }, { status: 400 });
-  }
+// POST /api/poll — Authorization: Bearer <token>. The single endpoint that
+// drives the live map. It (1) heartbeats the caller, (2) reaps stale presence
+// + orphan signals, (3) returns the filtered online peers, and (4) drains this
+// user's mailbox. POST because it has side effects; the token travels in a
+// header so it never lands in URLs or access logs.
+export async function POST(request: NextRequest) {
+  const token = bearerToken(request);
+  if (!token) return unauthorized();
 
   const now = Date.now();
   const staleCutoff = new Date(now - STALE_MS);
   const signalCutoff = new Date(now - SIGNAL_TTL_MS);
 
-  // 1) Heartbeat — refresh lastSeen for the caller only. (An empty `where`
-  // here refreshed *every* row, so nobody ever went stale while anyone was
-  // still polling.)
-  const heartbeat = await prisma.presence.updateMany({
-    where: { id },
-    data: { lastSeen: new Date(now) },
-  });
+  // 1) Heartbeat the caller only — this also authenticates the token. No row
+  // means the session was reaped while away (e.g. a backgrounded tab whose
+  // timers were throttled) or never existed: 401, and the client re-joins.
+  let id: string;
+  try {
+    ({ id } = await prisma.presence.update({
+      where: { tokenHash: hashToken(token) },
+      data: { lastSeen: new Date(now) },
+      select: { id: true },
+    }));
+  } catch (err) {
+    if (isNotFound(err)) return unauthorized();
+    throw err;
+  }
 
   // 2) Reap stale presence rows and orphaned signals (independent deletes —
   // no atomicity needed, and avoids transactions over a PgBouncer pooler).
@@ -66,9 +72,6 @@ export async function GET(request: NextRequest) {
   }
 
   const response: PollResponse = {
-    // No row to heartbeat means the caller was reaped while away (e.g. a
-    // backgrounded tab whose timers were throttled) — the client re-joins.
-    present: heartbeat.count > 0,
     peers: peers.map((p) => ({
       id: p.id,
       lat: p.lat,
