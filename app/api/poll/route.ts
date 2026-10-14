@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
-import { endConversations } from "@/lib/presence-server";
+import { MAX_PEERS, STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
+import { deleteSessions, endConversations } from "@/lib/presence-server";
 import { bearerToken, hashToken, isNotFound, unauthorized } from "@/lib/session";
 import type { PollResponse } from "@/lib/types";
 
@@ -19,7 +19,6 @@ export async function POST(request: NextRequest) {
 
   const now = Date.now();
   const staleCutoff = new Date(now - STALE_MS);
-  const signalCutoff = new Date(now - SIGNAL_TTL_MS);
 
   // 1) Heartbeat the caller only — this also authenticates the token. No row
   // means the session was reaped while away (e.g. a backgrounded tab whose
@@ -36,28 +35,27 @@ export async function POST(request: NextRequest) {
     throw err;
   }
 
-  // 2) Reap stale presence rows and orphaned signals (independent deletes —
-  // no atomicity needed, and avoids transactions over a PgBouncer pooler).
-  // Anyone mid-conversation with a reaped user is released and told.
+  // 2) Reap stale sessions. Anyone mid-conversation with (or waiting on) a
+  // reaped user is released and told.
   const stale = await prisma.presence.findMany({
     where: { lastSeen: { lt: staleCutoff } },
     select: { id: true, outgoingTo: true },
   });
   if (stale.length > 0) {
-    await prisma.presence.deleteMany({
-      where: { id: { in: stale.map((s) => s.id) } },
-    });
+    await deleteSessions(stale.map((s) => s.id));
     await endConversations(stale);
   }
-  await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
+  await sweep(now);
 
-  // 3) Online peers, excluding self.
+  // 3) Online peers, excluding self (capped, freshest first).
   const peers = await prisma.presence.findMany({
     where: {
       id: { not: id },
       lastSeen: { gte: staleCutoff },
     },
     select: { id: true, lat: true, lng: true, busy: true },
+    orderBy: { lastSeen: "desc" },
+    take: MAX_PEERS,
   });
 
   // 4) Drain this user's mailbox: read, then delete exactly what we read so a
@@ -90,4 +88,20 @@ export async function POST(request: NextRequest) {
   };
 
   return Response.json(response);
+}
+
+// Expire orphaned signals, finished cooldowns and rate-limit windows. It
+// doesn't need to run on every poll, so each instance does it at most every
+// few seconds instead of adding three deletes to the hottest endpoint.
+const SWEEP_EVERY_MS = 10_000;
+let lastSweep = 0;
+
+async function sweep(now: number) {
+  if (now - lastSweep < SWEEP_EVERY_MS) return;
+  lastSweep = now;
+  await prisma.signal.deleteMany({
+    where: { createdAt: { lt: new Date(now - SIGNAL_TTL_MS) } },
+  });
+  await prisma.block.deleteMany({ where: { expiresAt: { lt: new Date(now) } } });
+  await prisma.rateLimit.deleteMany({ where: { resetAt: { lt: new Date(now) } } });
 }

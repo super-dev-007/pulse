@@ -69,9 +69,14 @@ export default function Home() {
     window.setTimeout(() => setNotice(null), 3500);
   }
 
-  function signal(toId: string, type: SignalType, payload?: string) {
+  // Resolves to the HTTP status, or null with no session yet.
+  function signal(
+    toId: string,
+    type: SignalType,
+    payload?: string,
+  ): Promise<number | null> {
     const session = sessionRef.current;
-    if (!session) return Promise.resolve();
+    if (!session) return Promise.resolve(null);
     return sendSignal(session.token, toId, type, payload);
   }
 
@@ -99,7 +104,9 @@ export default function Home() {
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
         outbox = outbox
-          .then(() => signal(peerId, type, payload))
+          .then(async () => {
+            await signal(peerId, type, payload);
+          })
           .catch(() => {});
       },
       onChat: (text) => addMessage(false, text),
@@ -175,7 +182,12 @@ export default function Home() {
   function requestConnection(peerId: string) {
     if (connRef.current.kind !== "idle") return;
     setConn({ kind: "requesting", peerId });
-    void signal(peerId, "request");
+    void signal(peerId, "request").then((status) => {
+      const c = connRef.current;
+      if (status === 429 && c.kind === "requesting" && c.peerId === peerId) {
+        teardown("Easy there — try again in a minute.");
+      }
+    });
     requestTimer.current = setTimeout(() => {
       if (
         connRef.current.kind === "requesting" &&

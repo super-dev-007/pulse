@@ -4,9 +4,16 @@ import type { JoinResponse, PollResponse, SignalType } from "../lib/types";
 // API-level checks for the coordination server: sessions, presence,
 // busy/partner state and mailbox delivery. No browser or Mapbox needed.
 
+// A random address in the 198.18.0.0/15 benchmarking range.
+const randomIp = () =>
+  `198.${18 + (Math.random() < 0.5 ? 0 : 1)}.${(Math.random() * 256) | 0}.${(Math.random() * 256) | 0}`;
+
 function user(request: APIRequestContext, lat = 38.72, lng = -9.14) {
   let session: JoinResponse | null = null;
   const auth = () => ({ Authorization: `Bearer ${session!.token}` });
+  // Each simulated user is its own client, so the per-IP join limit doesn't
+  // couple unrelated tests (locally nothing overwrites x-forwarded-for).
+  const ip = randomIp();
   return {
     get id() {
       return session!.id;
@@ -15,7 +22,10 @@ function user(request: APIRequestContext, lat = 38.72, lng = -9.14) {
       return session!.token;
     },
     async join() {
-      const res = await request.post("/api/join", { data: { lat, lng } });
+      const res = await request.post("/api/join", {
+        data: { lat, lng },
+        headers: { "x-forwarded-for": ip },
+      });
       expect(res.ok()).toBeTruthy();
       session = await res.json();
     },
@@ -329,5 +339,72 @@ test.describe("connection state machine (security)", () => {
     expect(await a.signal(b.id, "offer", smuggled)).toBe(200);
     const [offer] = (await b.poll()).signals;
     expect(JSON.parse(offer.payload!)).toEqual({ type: "offer", sdp: "v=0\r\n" });
+  });
+});
+
+test.describe("abuse limits (security)", () => {
+  test("joins are rate-limited per client IP", async ({ request }) => {
+    const ip = randomIp();
+    const join = () =>
+      request.post("/api/join", {
+        data: { lat: 1, lng: 1 },
+        headers: { "x-forwarded-for": ip },
+      });
+    for (let i = 0; i < 30; i++) expect((await join()).status()).toBe(200);
+    const limited = await join();
+    expect(limited.status()).toBe(429);
+    expect(limited.headers()["retry-after"]).toBeTruthy();
+  });
+
+  test("only one pending request at a time", async ({ request }) => {
+    const [a, b, c] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), c.join()]);
+
+    expect(await a.signal(b.id, "request")).toBe(200);
+    expect(await a.signal(c.id, "request")).toBe(409);
+    expect(signalsFrom(await c.poll(), a)).toEqual([]);
+  });
+
+  test("someone who declined you can't be re-asked right away", async ({
+    request,
+  }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll();
+    await b.signal(a.id, "decline");
+    expect(signalsFrom(await a.poll(), b)).toEqual(["decline"]);
+
+    // Asking again is quietly auto-declined; b is never re-prompted.
+    expect(await a.signal(b.id, "request")).toBe(200);
+    expect(signalsFrom(await a.poll(), b)).toEqual(["decline"]);
+    expect(signalsFrom(await b.poll(), a)).toEqual([]);
+  });
+
+  test("connection requests are rate-limited per session", async ({
+    request,
+  }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+
+    for (let i = 0; i < 10; i++) {
+      expect(await a.signal(b.id, "request")).toBe(200);
+      expect(await a.signal(b.id, "end")).toBe(200); // withdraw, ask again...
+    }
+    expect(await a.signal(b.id, "request")).toBe(429);
+  });
+
+  test("a recipient's mailbox can't be flooded", async ({ request }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+    await connect(a, b);
+
+    const ice = JSON.stringify({ candidate: "candidate:1 1 udp 1 0.0.0.0 9 typ host", sdpMid: "0" });
+    // b isn't polling, so nothing drains.
+    for (let i = 0; i < 100; i++) expect(await a.signal(b.id, "ice", ice)).toBe(200);
+    expect(await a.signal(b.id, "ice", ice)).toBe(429);
+    // State changes still get through a full mailbox.
+    expect(await a.signal(b.id, "end")).toBe(200);
   });
 });

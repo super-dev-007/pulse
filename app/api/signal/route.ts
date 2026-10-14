@@ -1,6 +1,13 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { STALE_MS } from "@/lib/presence";
+import {
+  DECLINE_COOLDOWN_MS,
+  MAILBOX_CAP,
+  REQUESTS_PER_MIN,
+  SIGNALS_PER_MIN,
+  STALE_MS,
+} from "@/lib/presence";
+import { allow, tooManyRequests } from "@/lib/rate-limit";
 import { bearerToken, findSession, isSessionId, unauthorized } from "@/lib/session";
 import { normalizePayload } from "@/lib/signal-payload";
 import type { SignalType } from "@/lib/types";
@@ -58,6 +65,18 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: "invalid payload" }, { status: 400 });
   }
 
+  // Bound how much one session can write...
+  if (!(await allow(`signal:${me.id}`, SIGNALS_PER_MIN, 60_000))) {
+    return tooManyRequests(60);
+  }
+  // ...and how much can pile up for one recipient (a live mailbox drains
+  // every poll). Only for the bulk types: accept/decline/end carry state
+  // changes and must always go through.
+  const bulk = signalType === "request" || isRelay(signalType);
+  if (bulk && (await prisma.signal.count({ where: { toId } })) >= MAILBOX_CAP) {
+    return tooManyRequests(2);
+  }
+
   switch (signalType) {
     case "request":
       return handleRequest(me, toId);
@@ -81,13 +100,28 @@ async function handleRequest(me: Me, toId: string) {
   if (me.partnerId) {
     return Response.json({ error: "already connected" }, { status: 409 });
   }
+  if (me.outgoingTo) {
+    // One pending request at a time — no fanning out to the whole map.
+    return Response.json({ error: "request already pending" }, { status: 409 });
+  }
+  if (!(await allow(`request:${me.id}`, REQUESTS_PER_MIN, 60_000))) {
+    return tooManyRequests(60);
+  }
+
+  const now = Date.now();
   const target = await prisma.presence.findUnique({
     where: { id: toId },
     select: { busy: true, lastSeen: true },
   });
-  const online = !!target && target.lastSeen.getTime() >= Date.now() - STALE_MS;
-  if (!online || target.busy) {
-    // Offline or already talking to someone: decline on their behalf.
+  const blocked = await prisma.block.findFirst({
+    where: { blockerId: toId, blockedId: me.id, expiresAt: { gt: new Date(now) } },
+    select: { expiresAt: true },
+  });
+  const online = !!target && target.lastSeen.getTime() >= now - STALE_MS;
+  if (!online || target.busy || blocked) {
+    // Offline, already talking to someone, or recently said no to us: decline
+    // on their behalf. Deliberately indistinguishable, so a cooldown (or a
+    // block) can't be detected and nobody gets re-prompted.
     await deliver(toId, me.id, "decline");
     return ok({ autoDeclined: true });
   }
@@ -130,8 +164,22 @@ async function handleDecline(me: Me, toId: string) {
     data: { outgoingTo: null },
   });
   if (count === 0) return ok({ dropped: true }); // no request to decline
+  await coolDown(me.id, toId, DECLINE_COOLDOWN_MS);
   await deliver(me.id, toId, "decline");
   return ok();
+}
+
+// `blocked` may not request `blocker` for `ms`. Never shortens a longer block.
+async function coolDown(blockerId: string, blockedId: string, ms: number) {
+  const expiresAt = new Date(Date.now() + ms);
+  const key = { blockerId_blockedId: { blockerId, blockedId } };
+  const existing = await prisma.block.findUnique({ where: key });
+  if (existing && existing.expiresAt >= expiresAt) return;
+  await prisma.block.upsert({
+    where: key,
+    create: { blockerId, blockedId, expiresAt },
+    update: { expiresAt },
+  });
 }
 
 async function handleEnd(me: Me, toId: string) {
@@ -157,6 +205,10 @@ async function handleEnd(me: Me, toId: string) {
   }
   await deliver(me.id, toId, "end");
   return ok();
+}
+
+function isRelay(type: SignalType) {
+  return type === "offer" || type === "answer" || type === "ice";
 }
 
 function deliver(

@@ -37,3 +37,27 @@ model Signal {
 
   @@index([toId])
 }
+
+// Pairwise "blocked may not send blocker a request" until expiresAt — e.g. a
+// cooldown after a decline, so nobody can re-ask someone who just said no.
+// Deleted along with either session.
+model Block {
+  blockerId String
+  blockedId String
+  expiresAt DateTime
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+  @@index([expiresAt])
+}
+
+// Fixed-window rate-limit counters. They live in Postgres because serverless
+// instances share no memory: an in-process limiter would reset on every cold
+// start and multiply by the number of instances.
+model RateLimit {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
+}

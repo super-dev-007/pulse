@@ -1,6 +1,5 @@
 import type { NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { endConversations } from "@/lib/presence-server";
+import { deleteSessions, endConversations } from "@/lib/presence-server";
 import { bearerToken, findSession, isToken } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -24,15 +23,7 @@ export async function POST(request: NextRequest) {
   // Unknown or already-reaped session: nothing to do (leave is idempotent).
   if (!me) return Response.json({ ok: true });
 
-  // Independent cleanup deletes — no atomicity needed (and interactive
-  // transactions are unreliable over a PgBouncer pooler).
-  await prisma.signal.deleteMany({
-    where: { OR: [{ toId: me.id }, { fromId: me.id }] },
-  });
-  await prisma.presence.deleteMany({ where: { id: me.id } });
-
-  // Tell the other side — must run after the cleanup above, which would
-  // delete these `end`s.
+  await deleteSessions([me.id]);
   await endConversations([me]);
 
   return Response.json({ ok: true });
