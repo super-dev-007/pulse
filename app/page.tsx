@@ -74,9 +74,14 @@ export default function Home() {
   }
 
   function startPeer(peerId: string, initiator: boolean) {
+    // Send signaling messages one at a time so they reach the peer's mailbox
+    // in the order they were produced (an offer before its ICE candidates).
+    let outbox: Promise<void> = Promise.resolve();
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        void sendSignal(sessionId, peerId, type, payload);
+        outbox = outbox
+          .then(() => sendSignal(sessionId, peerId, type, payload))
+          .catch(() => {});
       },
       onChat: (text) => addMessage(false, text),
       onControl: (ctrl) => handleControl(ctrl),
