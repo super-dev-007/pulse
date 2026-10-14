@@ -256,13 +256,9 @@ export default function Home() {
       }
       case "end": {
         const c = connRef.current;
-        if (
-          (c.kind === "incoming" ||
-            c.kind === "connecting" ||
-            c.kind === "connected") &&
-          c.peerId === sig.fromId
-        ) {
+        if (c.kind !== "idle" && c.peerId === sig.fromId) {
           if (c.kind === "incoming") setConn({ kind: "idle" });
+          else if (c.kind === "requesting") teardown("They're no longer available.");
           else teardown("Stranger disconnected.");
         }
         break;
@@ -299,7 +295,11 @@ export default function Home() {
 
   useEffect(() => {
     if (!sessionId || phase !== "live") return;
-    const onLeave = () => leave(sessionId);
+    const onLeave = () => {
+      const c = connRef.current;
+      const pending = c.kind === "requesting" || c.kind === "incoming";
+      leave(sessionId, pending ? c.peerId : undefined);
+    };
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);
     return () => {

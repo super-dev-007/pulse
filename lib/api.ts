@@ -34,9 +34,11 @@ export async function sendSignal(
   });
 }
 
-// Fire-and-forget leave that survives the tab closing.
-export function leave(id: string): void {
-  const body = JSON.stringify({ id });
+// Fire-and-forget leave that survives the tab closing. `peerId` is the other
+// side of a pending request (sent or received) so they can be told too;
+// an established partner is known to the server already.
+export function leave(id: string, peerId?: string): void {
+  const body = JSON.stringify({ id, peerId });
   if (typeof navigator !== "undefined" && navigator.sendBeacon) {
     navigator.sendBeacon("/api/leave", body);
   } else {
