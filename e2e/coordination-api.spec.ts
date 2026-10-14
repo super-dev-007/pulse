@@ -92,10 +92,22 @@ test.describe("presence and connections", () => {
     expect(peerOf(later, b)).toBeTruthy();
     expect(peerOf(later, silent)).toBeUndefined();
 
-    // The reaped session is rejected, and re-joining puts the user back.
-    expect(await silent.pollStatus()).toBe(401);
-    await silent.join();
-    expect(peerOf(await a.poll(), silent)).toBeTruthy();
+    // Coming back within the grace period resumes the same session — and the
+    // same dot, so repeated returns can't be averaged toward the real spot.
+    expect(await silent.pollStatus()).toBe(200);
+    const back = peerOf(await a.poll(), silent);
+    expect(back).toBeTruthy();
+    expect([back!.lat, back!.lng]).toEqual([
+      peerOf(first, silent)!.lat,
+      peerOf(first, silent)!.lng,
+    ]);
+  });
+
+  test("a session that left is gone for good", async ({ request }) => {
+    const u = user(request);
+    await u.join();
+    await u.leave();
+    expect(await u.pollStatus()).toBe(401); // the client re-joins on 401
   });
 
   test("accepting pairs both users and ending frees them", async ({ request }) => {

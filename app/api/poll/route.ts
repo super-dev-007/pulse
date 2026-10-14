@@ -1,6 +1,11 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { MAX_PEERS, STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
+import {
+  MAX_PEERS,
+  SESSION_GRACE_MS,
+  SIGNAL_TTL_MS,
+  STALE_MS,
+} from "@/lib/presence";
 import { deleteSessions, endConversations } from "@/lib/presence-server";
 import { bearerToken, hashToken, isNotFound, unauthorized } from "@/lib/session";
 import type { PollResponse } from "@/lib/types";
@@ -20,9 +25,10 @@ export async function POST(request: NextRequest) {
   const now = Date.now();
   const staleCutoff = new Date(now - STALE_MS);
 
-  // 1) Heartbeat the caller only — this also authenticates the token. No row
-  // means the session was reaped while away (e.g. a backgrounded tab whose
-  // timers were throttled) or never existed: 401, and the client re-joins.
+  // 1) Heartbeat the caller only — this also authenticates the token, and
+  // revives a session that went stale within its grace period. No row means
+  // it was away longer than that (or never existed): 401, and the client
+  // re-joins.
   let id: string;
   try {
     ({ id } = await prisma.presence.update({
@@ -35,15 +41,31 @@ export async function POST(request: NextRequest) {
     throw err;
   }
 
-  // 2) Reap stale sessions. Anyone mid-conversation with (or waiting on) a
-  // reaped user is released and told.
-  const stale = await prisma.presence.findMany({
-    where: { lastSeen: { lt: staleCutoff } },
+  // 2) Stale sessions are hidden from the map right away (see the peers
+  // query), and whatever they were part of ends now, so nobody waits on
+  // them. The row itself survives SESSION_GRACE_MS so a returning tab keeps
+  // its dot (see lib/presence.ts); after that it's deleted.
+  const wentStale = await prisma.presence.findMany({
+    where: {
+      lastSeen: { lt: staleCutoff },
+      OR: [{ partnerId: { not: null } }, { outgoingTo: { not: null } }],
+    },
     select: { id: true, outgoingTo: true },
   });
-  if (stale.length > 0) {
-    await deleteSessions(stale.map((s) => s.id));
-    await endConversations(stale);
+  if (wentStale.length > 0) {
+    await prisma.presence.updateMany({
+      where: { id: { in: wentStale.map((s) => s.id) } },
+      data: { busy: false, partnerId: null, outgoingTo: null },
+    });
+    await endConversations(wentStale);
+  }
+  const expired = await prisma.presence.findMany({
+    where: { lastSeen: { lt: new Date(now - SESSION_GRACE_MS) } },
+    select: { id: true, outgoingTo: true },
+  });
+  if (expired.length > 0) {
+    await deleteSessions(expired.map((s) => s.id));
+    await endConversations(expired);
   }
   await sweep(now);
 

@@ -3,6 +3,13 @@
 // user leaves" even if their tab closed without a clean leave.
 export const STALE_MS = 15_000;
 
+// A stale session is hidden at STALE_MS but only deleted after this grace
+// period. If it heartbeats again before then (a tab that was asleep in the
+// background), it resumes with the *same* dot. A fresh random offset on every
+// return would let an observer average the samples back toward the user's
+// real location.
+export const SESSION_GRACE_MS = 120_000;
+
 // Orphan signals (mailbox messages never drained) are cleaned up after this.
 export const SIGNAL_TTL_MS = 60_000;
 
