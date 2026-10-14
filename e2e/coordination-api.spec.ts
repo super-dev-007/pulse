@@ -35,10 +35,10 @@ function user(request: APIRequestContext, lat = 38.72, lng = -9.14) {
       return res.status();
     },
     // Same shape navigator.sendBeacon produces: a text/plain JSON body.
-    async leave(peerId?: string) {
+    async leave() {
       const res = await request.post("/api/leave", {
         headers: { "content-type": "text/plain;charset=UTF-8" },
-        data: JSON.stringify({ token: session!.token, peerId }),
+        data: JSON.stringify({ token: session!.token }),
       });
       expect(res.ok()).toBeTruthy();
     },
@@ -142,8 +142,20 @@ test.describe("presence and connections", () => {
 
     await a.signal(b.id, "request");
     expect(signalsFrom(await b.poll(), a)).toEqual(["request"]); // b sees the prompt
-    await a.leave(b.id);
+    await a.leave();
     expect(signalsFrom(await b.poll(), a)).toEqual(["end"]); // prompt dismissed
+  });
+
+  test("leaving tells whoever was waiting on a request to you", async ({
+    request,
+  }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll(); // b sees the prompt, then closes the tab
+    await b.leave();
+    expect(signalsFrom(await a.poll(), b)).toEqual(["end"]); // "no longer available"
   });
 
   test("accepting a request from someone who left tells the accepter", async ({
@@ -157,7 +169,10 @@ test.describe("presence and connections", () => {
     await a.leave(); // gone before b answers
     await b.signal(a.id, "accept");
 
-    expect(signalsFrom(await b.poll(), a)).toEqual(["end"]);
+    // One `end` from the leave (dismiss the prompt), one for the stale accept.
+    const told = signalsFrom(await b.poll(), a);
+    expect(told.length).toBeGreaterThan(0);
+    expect(told.every((t) => t === "end")).toBe(true);
     expect(peerOf(await observer.poll(), b)?.busy).toBe(false);
   });
 
@@ -236,5 +251,83 @@ test.describe("sessions (security)", () => {
     const inbox = await target.poll();
     expect(signalsFrom(inbox, victim)).toEqual([]);
     expect(signalsFrom(inbox, attacker)).toEqual(["request"]);
+  });
+});
+
+test.describe("connection state machine (security)", () => {
+  const OFFER = JSON.stringify({ type: "offer", sdp: "v=0\r\n" });
+
+  test("an accept nobody asked for pairs no one", async ({ request }) => {
+    const [attacker, victim, observer] = [
+      user(request),
+      user(request),
+      user(request),
+    ];
+    await Promise.all([attacker.join(), victim.join(), observer.join()]);
+
+    await attacker.signal(victim.id, "accept");
+
+    expect(signalsFrom(await victim.poll(), attacker)).toEqual([]);
+    const seen = await observer.poll();
+    expect(peerOf(seen, victim)?.busy).toBe(false);
+    expect(peerOf(seen, attacker)?.busy).toBe(false);
+  });
+
+  test("WebRTC payloads only flow between connected partners", async ({
+    request,
+  }) => {
+    const [a, b, outsider] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), outsider.join()]);
+
+    expect(await outsider.signal(b.id, "offer", OFFER)).toBe(409);
+    await connect(a, b);
+    expect(await outsider.signal(b.id, "offer", OFFER)).toBe(409);
+    expect(signalsFrom(await b.poll(), outsider)).toEqual([]);
+
+    expect(await a.signal(b.id, "offer", OFFER)).toBe(200);
+    expect(signalsFrom(await b.poll(), a)).toEqual(["offer"]);
+  });
+
+  test("declines and ends need a relationship to be delivered", async ({
+    request,
+  }) => {
+    const [attacker, victim] = [user(request), user(request)];
+    await Promise.all([attacker.join(), victim.join()]);
+
+    await attacker.signal(victim.id, "decline");
+    await attacker.signal(victim.id, "end");
+    expect(signalsFrom(await victim.poll(), attacker)).toEqual([]);
+  });
+
+  test("a withdrawn request can't be accepted", async ({ request }) => {
+    const [a, b, observer] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), observer.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll();
+    await a.signal(b.id, "end"); // cancel before b answers
+    await b.signal(a.id, "accept");
+
+    expect(signalsFrom(await b.poll(), a)).toContain("end");
+    expect(signalsFrom(await a.poll(), b)).toEqual([]); // no accept reached a
+    expect(peerOf(await observer.poll(), a)?.busy).toBe(false);
+  });
+
+  test("payloads are validated per type and re-serialised", async ({
+    request,
+  }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+    await connect(a, b);
+
+    expect(await a.signal(b.id, "offer", "not json")).toBe(400);
+    expect(await a.signal(b.id, "offer", JSON.stringify({ type: "answer", sdp: "x" }))).toBe(400);
+    expect(await a.signal(b.id, "end", "unexpected payload")).toBe(400);
+    expect(await a.signal(b.id, "ice", JSON.stringify({ candidate: "x".repeat(5000) }))).toBe(400);
+
+    const smuggled = JSON.stringify({ type: "offer", sdp: "v=0\r\n", extra: "<script>" });
+    expect(await a.signal(b.id, "offer", smuggled)).toBe(200);
+    const [offer] = (await b.poll()).signals;
+    expect(JSON.parse(offer.payload!)).toEqual({ type: "offer", sdp: "v=0\r\n" });
   });
 });

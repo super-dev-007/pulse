@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
-import { releasePartners } from "@/lib/presence-server";
+import { endConversations } from "@/lib/presence-server";
 import { bearerToken, hashToken, isNotFound, unauthorized } from "@/lib/session";
 import type { PollResponse } from "@/lib/types";
 
@@ -41,12 +41,13 @@ export async function POST(request: NextRequest) {
   // Anyone mid-conversation with a reaped user is released and told.
   const stale = await prisma.presence.findMany({
     where: { lastSeen: { lt: staleCutoff } },
-    select: { id: true },
+    select: { id: true, outgoingTo: true },
   });
   if (stale.length > 0) {
-    const staleIds = stale.map((s) => s.id);
-    await prisma.presence.deleteMany({ where: { id: { in: staleIds } } });
-    await releasePartners(staleIds);
+    await prisma.presence.deleteMany({
+      where: { id: { in: stale.map((s) => s.id) } },
+    });
+    await endConversations(stale);
   }
   await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
 

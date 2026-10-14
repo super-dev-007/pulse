@@ -356,11 +356,7 @@ export default function Home() {
   useEffect(() => {
     if (phase !== "live") return;
     const onLeave = () => {
-      const session = sessionRef.current;
-      if (!session) return;
-      const c = connRef.current;
-      const pending = c.kind === "requesting" || c.kind === "incoming";
-      leave(session.token, pending ? c.peerId : undefined);
+      if (sessionRef.current) leave(sessionRef.current.token);
     };
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);

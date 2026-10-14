@@ -16,12 +16,14 @@ model Presence {
   tokenHash String   @unique // SHA-256 of the secret session token
   lat       Float // ALREADY privacy-offset coords (raw is never stored)
   lng       Float
-  busy      Boolean  @default(false) // true while in an active connection
-  partnerId String? // who they're connected to while busy
-  lastSeen  DateTime
+  busy       Boolean  @default(false) // true while in an active connection
+  partnerId  String? // who they're connected to while busy
+  outgoingTo String? // who they have a pending connection request with
+  lastSeen   DateTime
 
   @@index([lastSeen])
   @@index([partnerId])
+  @@index([outgoingTo])
 }
 
 model Signal {

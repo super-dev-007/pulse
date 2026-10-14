@@ -44,11 +44,10 @@ export async function sendSignal(
 }
 
 // Fire-and-forget leave that survives the tab closing. sendBeacon can't set
-// headers, so the token rides in the body. `peerId` is the other side of a
-// pending request (sent or received) so they can be told too; an established
-// partner is known to the server already.
-export function leave(token: string, peerId?: string): void {
-  const body = JSON.stringify({ token, peerId });
+// headers, so the token rides in the body. The server knows who we were
+// talking to (or had a pending request with) and tells them.
+export function leave(token: string): void {
+  const body = JSON.stringify({ token });
   if (typeof navigator !== "undefined" && navigator.sendBeacon) {
     navigator.sendBeacon("/api/leave", body);
   } else {
