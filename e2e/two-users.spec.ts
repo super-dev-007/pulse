@@ -22,20 +22,20 @@ async function enter(browser: Browser, geolocation: typeof LISBON) {
   // The server assigns the public session id on join; grab it to find this
   // user's dot on the other user's map.
   const joined = page.waitForResponse(/\/api\/join$/);
-  await page.getByRole("button", { name: "Enter Pulse" }).click();
+  await page.getByRole("button", { name: "Drop onto the globe" }).click();
   const { id } = (await (await joined).json()) as { id: string };
   await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
   return { context, page, id };
 }
 
 const dotOf = (page: Page, peerId: string) =>
-  page.locator(`.pulse-dot[data-peer-id="${peerId}"]`);
+  page.locator(`.peer[data-peer-id="${peerId}"]`);
 
 async function connect(from: Page, to: Page, toId: string) {
   await dotOf(from, toId).click();
   await to.getByRole("button", { name: "Accept" }).click();
   for (const page of [from, to]) {
-    await expect(page.getByText("Connected", { exact: true })).toBeVisible({
+    await expect(page.getByPlaceholder("Type a message…")).toBeEnabled({
       timeout: 30_000,
     });
   }
@@ -70,7 +70,7 @@ test("two strangers connect, chat, video call and part ways", async ({
   await expect(a.page.getByText("olá from Porto")).toBeVisible();
 
   // Video: request, accept, and both sides actually receive frames.
-  await a.page.getByRole("button", { name: "Video" }).click();
+  await a.page.getByRole("button", { name: "Start video" }).click();
   await b.page.getByRole("button", { name: "Accept" }).click();
   for (const page of [a.page, b.page]) {
     await expect
@@ -82,14 +82,14 @@ test("two strangers connect, chat, video call and part ways", async ({
   await a.page.getByRole("button", { name: "End video" }).click();
   await expect(b.page.getByRole("button", { name: "End video" })).toBeHidden();
   await a.page.getByRole("button", { name: "End", exact: true }).click();
-  await expect(b.page.getByText("Stranger disconnected.")).toBeVisible();
+  await expect(b.page.getByText(/left the conversation/)).toBeVisible();
 
   // Both were freed, so they can connect again (other direction this time).
   await connect(b.page, a.page, a.id);
 
   // b closes the tab: a's chat ends and b's dot leaves a's map.
   await b.page.close({ runBeforeUnload: true });
-  await expect(a.page.getByText("Stranger disconnected.")).toBeVisible({
+  await expect(a.page.getByText(/left the conversation/)).toBeVisible({
     timeout: 30_000,
   });
   await expect(dotOf(a.page, b.id)).toBeHidden({ timeout: 20_000 });
