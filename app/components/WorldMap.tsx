@@ -125,6 +125,7 @@ export default function WorldMap({
         if (!marker) {
           const el = document.createElement("button");
           el.className = "pulse-dot";
+          el.dataset.peerId = peer.id;
           el.style.background = dotColor(peer.id);
           el.title = "Tap to connect";
           el.addEventListener("click", (e) => {

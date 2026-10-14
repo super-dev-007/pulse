@@ -1,5 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Same as prisma.config.ts: pick up .env so tests can see e.g. whether a
+// Mapbox token is configured.
+try {
+  process.loadEnvFile(".env");
+} catch {
+  // optional
+}
+
 // E2E + API tests against a running Pulse (local dev server by default, or a
 // deployment via E2E_BASE_URL). PW_CHANNEL=chrome uses an installed Chrome
 // instead of Playwright's bundled Chromium.
