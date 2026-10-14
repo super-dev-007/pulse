@@ -1,52 +1,19 @@
-import { test, expect, type Browser, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import {
+  LISBON,
+  PORTO,
+  connect,
+  dotOf,
+  enter,
+  needsMap,
+  startVideo,
+} from "./helpers";
 
 // The full product loop with two real browser sessions: see each other on the
 // map, connect, chat both ways, video call, hang up, reconnect, and leave.
 // Chrome's fake camera/mic stand in for real devices.
 
-test.skip(
-  !process.env.E2E_BASE_URL && !process.env.NEXT_PUBLIC_MAPBOX_TOKEN,
-  "needs NEXT_PUBLIC_MAPBOX_TOKEN to render the map",
-);
-
-const LISBON = { latitude: 38.7223, longitude: -9.1393 };
-const PORTO = { latitude: 41.1579, longitude: -8.6291 };
-
-async function enter(browser: Browser, geolocation: typeof LISBON) {
-  const context = await browser.newContext({
-    geolocation,
-    permissions: ["geolocation", "camera", "microphone"],
-  });
-  const page = await context.newPage();
-  await page.goto("/");
-  // The server assigns the public session id on join; grab it to find this
-  // user's dot on the other user's map.
-  const joined = page.waitForResponse(/\/api\/join$/);
-  await page.getByRole("button", { name: "Drop onto the globe" }).click();
-  const { id } = (await (await joined).json()) as { id: string };
-  await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
-  return { context, page, id };
-}
-
-const dotOf = (page: Page, peerId: string) =>
-  page.locator(`.peer[data-peer-id="${peerId}"]`);
-
-async function connect(from: Page, to: Page, toId: string) {
-  await dotOf(from, toId).click();
-  await to.getByRole("button", { name: "Accept" }).click();
-  for (const page of [from, to]) {
-    await expect(page.getByPlaceholder("Type a message…")).toBeEnabled({
-      timeout: 30_000,
-    });
-  }
-}
-
-async function remoteVideoWidth(page: Page) {
-  // The first <video> is the full-screen remote feed.
-  return page.evaluate(
-    () => document.querySelector("video")?.videoWidth ?? 0,
-  );
-}
+test.skip(needsMap(), "needs NEXT_PUBLIC_MAPBOX_TOKEN to render the map");
 
 test("two strangers connect, chat, video call and part ways", async ({
   browser,
@@ -70,13 +37,7 @@ test("two strangers connect, chat, video call and part ways", async ({
   await expect(a.page.getByText("olá from Porto")).toBeVisible();
 
   // Video: request, accept, and both sides actually receive frames.
-  await a.page.getByRole("button", { name: "Start video" }).click();
-  await b.page.getByRole("button", { name: "Accept" }).click();
-  for (const page of [a.page, b.page]) {
-    await expect
-      .poll(() => remoteVideoWidth(page), { timeout: 30_000 })
-      .toBeGreaterThan(0);
-  }
+  await startVideo(a.page, b.page);
 
   // End video → back to chat; end chat → the other side is told.
   await a.page.getByRole("button", { name: "End video" }).click();
