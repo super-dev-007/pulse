@@ -4,6 +4,7 @@ const CONTROLS = [
   "video-accept",
   "video-decline",
   "video-end",
+  "typing",
 ] as const;
 export type PeerControl = (typeof CONTROLS)[number];
 
@@ -200,6 +201,15 @@ export class PeerSession {
       }
     }
     return this.localStream;
+  }
+
+  // Mute without renegotiating: a disabled track sends silence / black.
+  setMicEnabled(on: boolean) {
+    for (const t of this.localStream?.getAudioTracks() ?? []) t.enabled = on;
+  }
+
+  setCameraEnabled(on: boolean) {
+    for (const t of this.localStream?.getVideoTracks() ?? []) t.enabled = on;
   }
 
   stopVideo() {
