@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Lock, PhoneOff, SendHorizontal, Video } from "lucide-react";
+import {
+  Loader2,
+  Lock,
+  PhoneOff,
+  SendHorizontal,
+  ShieldBan,
+  Video,
+} from "lucide-react";
 import Orb from "./Orb";
 import { handleFor } from "@/lib/identity";
 import { MAX_CHAT_LENGTH } from "@/lib/webrtc";
@@ -33,6 +40,7 @@ export default function ChatPanel({
   onTyping,
   onStartVideo,
   onEnd,
+  onBlock,
 }: {
   peerId: string;
   detail: string;
@@ -44,8 +52,10 @@ export default function ChatPanel({
   onTyping: () => void;
   onStartVideo: () => void;
   onEnd: () => void;
+  onBlock: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [confirmBlock, setConfirmBlock] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const name = handleFor(peerId);
@@ -95,6 +105,15 @@ export default function ChatPanel({
           </p>
         </div>
         <button
+          onClick={() => setConfirmBlock((c) => !c)}
+          aria-label="Block"
+          aria-expanded={confirmBlock}
+          title="Block"
+          className="grid h-11 w-11 place-items-center rounded-full bg-white/8 text-white/60 transition hover:bg-white/15 hover:text-white"
+        >
+          <ShieldBan className="h-[18px] w-[18px]" />
+        </button>
+        <button
           onClick={onStartVideo}
           disabled={!connected || videoBusy}
           aria-label="Start video"
@@ -112,6 +131,27 @@ export default function ChatPanel({
           <PhoneOff className="h-[18px] w-[18px]" />
         </button>
       </header>
+
+      {confirmBlock && (
+        <div className="flex animate-rise items-center gap-3 border-b border-white/[0.06] bg-pulse/[0.07] px-5 py-3 text-sm">
+          <p className="flex-1 text-white/75">
+            Block {name}? You&rsquo;ll both disappear from each other&rsquo;s
+            map for the rest of this session.
+          </p>
+          <button
+            onClick={() => setConfirmBlock(false)}
+            className="rounded-full px-3 py-1.5 text-white/60 transition hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onBlock}
+            className="rounded-full bg-pulse px-3.5 py-1.5 font-semibold text-white transition hover:bg-[#ff6189]"
+          >
+            Block
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 space-y-1.5 overflow-y-auto px-4 py-4">
         <div className="mx-auto mb-4 max-w-[85%] rounded-2xl bg-white/[0.04] px-4 py-3 text-center text-xs leading-relaxed text-white/45">

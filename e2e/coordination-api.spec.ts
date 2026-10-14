@@ -420,3 +420,54 @@ test.describe("abuse limits (security)", () => {
     expect(await a.signal(b.id, "end")).toBe(200);
   });
 });
+
+test.describe("blocking (safety)", () => {
+  async function block(request: APIRequestContext, blocker: User, toId: string) {
+    const res = await request.post("/api/block", {
+      headers: { Authorization: `Bearer ${blocker.token}` },
+      data: { toId },
+    });
+    expect(res.ok()).toBeTruthy();
+  }
+
+  test("blocked users vanish from each other's map and can't call", async ({
+    request,
+  }) => {
+    const [a, b, c] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), c.join()]);
+
+    await block(request, a, b.id);
+
+    expect(peerOf(await a.poll(), b)).toBeUndefined();
+    expect(peerOf(await b.poll(), a)).toBeUndefined();
+    expect(peerOf(await c.poll(), a)).toBeTruthy(); // everyone else still sees a
+
+    // b's request is quietly auto-declined; a is never prompted.
+    expect(await b.signal(a.id, "request")).toBe(200);
+    expect(signalsFrom(await b.poll(), a)).toEqual(["decline"]);
+    expect(signalsFrom(await a.poll(), b)).toEqual([]);
+  });
+
+  test("blocking mid-conversation ends it for both", async ({ request }) => {
+    const [a, b, observer] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), observer.join()]);
+    await connect(a, b);
+
+    await block(request, b, a.id);
+
+    expect(signalsFrom(await a.poll(), b)).toEqual(["end"]);
+    const seen = await observer.poll();
+    expect(peerOf(seen, a)?.busy).toBe(false);
+    expect(peerOf(seen, b)?.busy).toBe(false);
+  });
+
+  test("a decline cooldown doesn't hide anyone", async ({ request }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll();
+    await b.signal(a.id, "decline");
+    expect(peerOf(await a.poll(), b)).toBeTruthy();
+  });
+});

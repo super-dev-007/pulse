@@ -14,6 +14,7 @@ export default function IncomingCall({
   note,
   onAccept,
   onDecline,
+  onBlock,
 }: {
   peerId: string;
   kind: "chat" | "video";
@@ -21,6 +22,7 @@ export default function IncomingCall({
   note?: string;
   onAccept: () => void;
   onDecline: () => void;
+  onBlock?: () => void;
 }) {
   const acceptRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -80,6 +82,14 @@ export default function IncomingCall({
             Accept
           </button>
         </div>
+        {onBlock && (
+          <button
+            onClick={onBlock}
+            className="mt-4 text-xs text-white/40 underline-offset-4 transition hover:text-white/70 hover:underline"
+          >
+            Decline &amp; block {name}
+          </button>
+        )}
       </div>
     </div>
   );

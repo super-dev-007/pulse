@@ -11,6 +11,7 @@ import IncomingCall from "./components/IncomingCall";
 import ChatPanel, { type ChatMessage } from "./components/ChatPanel";
 import VideoPanel from "./components/VideoPanel";
 import {
+  block,
   join,
   leave,
   poll,
@@ -305,6 +306,15 @@ export default function Home() {
     teardown();
   }
 
+  // Ends things with them (whatever stage), and the server keeps you apart
+  // for the rest of the session: hidden from each other, requests refused.
+  function blockPeer(peerId: string) {
+    const session = sessionRef.current;
+    if (!session) return;
+    void block(session.token, peerId);
+    teardown(`${handleFor(peerId)} is blocked — you won't see each other again.`);
+  }
+
   function sendChat(text: string) {
     peerRef.current?.sendChat(text);
     addMessage(true, text);
@@ -585,6 +595,7 @@ export default function Home() {
               detail={detailFor(conn.peerId)}
               onAccept={acceptIncoming}
               onDecline={declineIncoming}
+              onBlock={() => blockPeer(conn.peerId)}
             />
           )}
 
@@ -600,6 +611,7 @@ export default function Home() {
               onTyping={sendTyping}
               onStartVideo={startVideoRequest}
               onEnd={endConnection}
+              onBlock={() => blockPeer(conn.peerId)}
             />
           )}
 

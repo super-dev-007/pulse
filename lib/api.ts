@@ -45,6 +45,16 @@ export async function sendSignal(
   return res.status;
 }
 
+// End things with `toId` and never see or hear from them again this session.
+export async function block(token: string, toId: string): Promise<boolean> {
+  const res = await fetch("/api/block", {
+    method: "POST",
+    headers: { ...auth(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ toId }),
+  });
+  return res.ok;
+}
+
 // Fire-and-forget leave that survives the tab closing. sendBeacon can't set
 // headers, so the token rides in the body. The server knows who we were
 // talking to (or had a pending request with) and tells them.

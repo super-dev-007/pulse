@@ -113,8 +113,15 @@ async function handleRequest(me: Me, toId: string) {
     where: { id: toId },
     select: { busy: true, lastSeen: true },
   });
+  // They said no recently, or one of us blocked the other.
   const blocked = await prisma.block.findFirst({
-    where: { blockerId: toId, blockedId: me.id, expiresAt: { gt: new Date(now) } },
+    where: {
+      expiresAt: { gt: new Date(now) },
+      OR: [
+        { blockerId: toId, blockedId: me.id },
+        { blockerId: me.id, blockedId: toId, hidden: true },
+      ],
+    },
     select: { expiresAt: true },
   });
   const online = !!target && target.lastSeen.getTime() >= now - STALE_MS;

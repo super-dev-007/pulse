@@ -22,4 +22,5 @@ export const REQUESTS_PER_MIN = 10; // connection requests per session
 export const SIGNALS_PER_MIN = 300; // all signals per session (ICE comes in bursts)
 export const MAILBOX_CAP = 100; // undelivered messages per recipient
 export const DECLINE_COOLDOWN_MS = 60_000; // no re-asking someone who said no
+export const BLOCK_MS = 24 * 60 * 60_000; // outlives any session; dies with it
 export const MAX_PEERS = 1_000; // dots returned per poll
