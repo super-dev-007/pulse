@@ -6,6 +6,7 @@ const CONTROLS = [
   "video-accept",
   "video-decline",
   "video-end",
+  "video-unavailable", // our camera couldn't start
   "typing",
   // Mutual Reveal: "I'm ready to be seen" / "frost me again".
   "reveal-on",
@@ -17,8 +18,12 @@ export type PeerControl = (typeof CONTROLS)[number];
 // from a stranger's client. Bound it before it reaches the UI.
 export const MAX_CHAT_LENGTH = 1_000;
 const MAX_FRAME_BYTES = 8 * 1024;
-const MAX_MESSAGES_PER_WINDOW = 20; // per INBOUND_WINDOW_MS
 const INBOUND_WINDOW_MS = 5_000;
+// Per window: chatter (messages, typing) vs state changes (video, reveal).
+// State changes get a separate, roomier budget so they're never crowded out
+// — a dropped reveal-off would leave clear video flowing.
+const MAX_CHATTER = 20;
+const MAX_STATE_CHANGES = 40;
 
 interface PeerCallbacks {
   onSignal: (type: DescType, payload: string) => void;
@@ -43,11 +48,13 @@ export class PeerSession {
   private localStream: MediaStream | null = null; // raw camera + mic
   private frost: FrostedVideo | null = null;
   private videoSender: RTCRtpSender | null = null;
+  private openingCamera: Promise<MediaStream> | null = null;
+  private videoEpoch = 0; // bumped by stopVideo(): a camera still opening is let go
   private closed = false;
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private signalChain: Promise<void> = Promise.resolve();
-  private inboundAt: number[] = [];
+  private inbound = { chatter: [] as number[], state: [] as number[] };
 
   constructor(initiator: boolean, cb: PeerCallbacks) {
     this.cb = cb;
@@ -102,7 +109,6 @@ export class PeerSession {
     };
     dc.onmessage = (e) => {
       if (typeof e.data !== "string" || e.data.length > MAX_FRAME_BYTES) return;
-      if (!this.withinInboundRate()) return;
       try {
         const msg = JSON.parse(e.data);
         if (
@@ -110,21 +116,25 @@ export class PeerSession {
           typeof msg.text === "string" &&
           msg.text.length <= MAX_CHAT_LENGTH
         ) {
-          this.cb.onChat(msg.text);
+          if (this.withinRate("chatter")) this.cb.onChat(msg.text);
         } else if (msg.t === "ctrl" && CONTROLS.includes(msg.ctrl)) {
-          this.cb.onControl(msg.ctrl);
+          const kind = msg.ctrl === "typing" ? "chatter" : "state";
+          if (this.withinRate(kind)) this.cb.onControl(msg.ctrl);
         }
       } catch {}
     };
   }
 
-  // Sliding window over inbound messages: a flooding peer gets dropped
-  // instead of freezing the chat.
-  private withinInboundRate(): boolean {
+  // Sliding windows over inbound messages: a flooding peer gets dropped
+  // instead of freezing the UI.
+  private withinRate(kind: "chatter" | "state"): boolean {
     const now = Date.now();
-    this.inboundAt = this.inboundAt.filter((t) => now - t < INBOUND_WINDOW_MS);
-    if (this.inboundAt.length >= MAX_MESSAGES_PER_WINDOW) return false;
-    this.inboundAt.push(now);
+    const recent = this.inbound[kind].filter((t) => now - t < INBOUND_WINDOW_MS);
+    this.inbound[kind] = recent;
+    if (recent.length >= (kind === "chatter" ? MAX_CHATTER : MAX_STATE_CHANGES)) {
+      return false;
+    }
+    recent.push(now);
     return true;
   }
 
@@ -200,20 +210,40 @@ export class PeerSession {
   // Returns the raw local stream for our own preview. What the peer receives
   // is a frosted copy of the camera until setRevealed(true).
   async startVideo(): Promise<MediaStream> {
-    if (!this.localStream) {
-      const raw = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      this.localStream = raw;
-      for (const track of raw.getAudioTracks()) this.pc.addTrack(track, raw);
-      const [camera] = raw.getVideoTracks();
-      if (camera) {
-        this.frost = new FrostedVideo(camera);
-        this.videoSender = this.pc.addTrack(this.frost.track, raw);
-      }
+    if (this.closed) throw new Error("session closed");
+    if (this.localStream) return this.localStream;
+    // Asked twice (a double-click, or both sides at once): one camera.
+    this.openingCamera ??= this.openCamera().finally(() => {
+      this.openingCamera = null;
+    });
+    return this.openingCamera;
+  }
+
+  private async openCamera(): Promise<MediaStream> {
+    const epoch = this.videoEpoch;
+    const raw = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+    // The call or the video ended while the permission prompt was open: let
+    // the camera go, rather than leave it running with no way to stop it.
+    if (this.closed || epoch !== this.videoEpoch) {
+      for (const track of raw.getTracks()) track.stop();
+      throw new Error("video cancelled");
     }
-    return this.localStream;
+    const [camera] = raw.getVideoTracks();
+    const frost = camera ? new FrostedVideo(camera) : null;
+    try {
+      for (const track of raw.getAudioTracks()) this.pc.addTrack(track, raw);
+      if (frost) this.videoSender = this.pc.addTrack(frost.track, raw);
+    } catch (err) {
+      for (const track of raw.getTracks()) track.stop();
+      frost?.stop();
+      throw err;
+    }
+    this.localStream = raw;
+    this.frost = frost;
+    return raw;
   }
 
   // Swap what the peer receives between the clear camera and its frosted
@@ -238,20 +268,26 @@ export class PeerSession {
   }
 
   stopVideo() {
-    if (this.localStream) {
-      for (const track of this.localStream.getTracks()) track.stop();
-      this.frost?.stop();
-      for (const sender of this.pc.getSenders()) {
-        if (sender.track) {
-          try {
-            this.pc.removeTrack(sender);
-          } catch {}
-        }
+    this.videoEpoch++; // a camera still opening is released when it arrives
+    if (!this.localStream) return;
+    for (const track of this.localStream.getTracks()) track.stop();
+    this.frost?.stop();
+    // removeTrack leaves its (now idle) slot in the session description, so
+    // each video call in a chat adds ~7 KB — the server allows 128 KB, about
+    // 16 calls. Stopping transceivers instead keeps it flat, but over our
+    // slow, polled signaling a late "stop" can land on a recycled slot and
+    // kill the next call's media (seen from the 3rd call). Reusing the
+    // transceivers via replaceTrack is the proper fix — see NOTES.md.
+    for (const sender of this.pc.getSenders()) {
+      if (sender.track) {
+        try {
+          this.pc.removeTrack(sender);
+        } catch {}
       }
-      this.localStream = null;
-      this.frost = null;
-      this.videoSender = null;
     }
+    this.localStream = null;
+    this.frost = null;
+    this.videoSender = null;
   }
 
   close() {
