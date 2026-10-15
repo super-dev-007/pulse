@@ -86,6 +86,7 @@ export default function Home() {
   };
 
   const peerRef = useRef<PeerSession | null>(null);
+  const sendQueue = useRef<Promise<unknown>>(Promise.resolve());
   const msgId = useRef(0);
   const toastId = useRef(0);
   const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,7 +109,11 @@ export default function Home() {
     if (soundRef.current) sound();
   }
 
-  // Resolves to the HTTP status, or null with no session yet.
+  // Every signal we send goes out strictly in order — one at a time — so the
+  // server sees them as we produced them: an offer before its ICE
+  // candidates, and an `end` before a quick re-`request` (otherwise the
+  // request can land first and be refused as "already connected").
+  // Resolves to the HTTP status, or null with no session / on failure.
   function signal(
     toId: string,
     type: SignalType,
@@ -116,7 +121,11 @@ export default function Home() {
   ): Promise<number | null> {
     const session = sessionRef.current;
     if (!session) return Promise.resolve(null);
-    return sendSignal(session.token, toId, type, payload);
+    const sent = sendQueue.current
+      .then(() => sendSignal(session.token, toId, type, payload))
+      .catch(() => null);
+    sendQueue.current = sent;
+    return sent;
   }
 
   function addMessage(mine: boolean, text: string) {
@@ -130,6 +139,14 @@ export default function Home() {
     if (requestTimer.current) clearTimeout(requestTimer.current);
     if (connectTimer.current) clearTimeout(connectTimer.current);
     if (typingTimer.current) clearTimeout(typingTimer.current);
+    // Our conversation is over, so the server has freed them too: show them
+    // as available now rather than on the next poll.
+    const c = connRef.current;
+    if (c.kind === "connecting" || c.kind === "connected") {
+      setPeers((prev) =>
+        prev.map((p) => (p.id === c.peerId ? { ...p, busy: false } : p)),
+      );
+    }
     peerRef.current?.close();
     peerRef.current = null;
     clearVideo();
@@ -140,16 +157,9 @@ export default function Home() {
   }
 
   function startPeer(peerId: string, initiator: boolean) {
-    // Send signaling messages one at a time so they reach the peer's mailbox
-    // in the order they were produced (an offer before its ICE candidates).
-    let outbox: Promise<void> = Promise.resolve();
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        outbox = outbox
-          .then(async () => {
-            await signal(peerId, type, payload);
-          })
-          .catch(() => {});
+        void signal(peerId, type, payload);
       },
       onChat: (text) => {
         if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -258,7 +268,15 @@ export default function Home() {
   }
 
   function requestConnection(peerId: string) {
-    if (connRef.current.kind !== "idle") return;
+    const c = connRef.current;
+    if (c.kind !== "idle") {
+      if (c.peerId !== peerId) notify("Finish this conversation first.");
+      return;
+    }
+    if (peers.find((p) => p.id === peerId)?.busy) {
+      notify(`${handleFor(peerId)} is talking to someone right now.`);
+      return;
+    }
     setConn({ kind: "requesting", peerId });
     void signal(peerId, "request").then((status) => {
       const c = connRef.current;
@@ -561,7 +579,6 @@ export default function Home() {
         peers={peers}
         me={myLocation}
         onPeerClick={requestConnection}
-        canConnect={conn.kind === "idle"}
       />
 
       {phase === "gate" && <EntryGate onReady={handleReady} />}

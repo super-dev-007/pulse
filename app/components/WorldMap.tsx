@@ -29,12 +29,10 @@ export default function WorldMap({
   peers,
   me,
   onPeerClick,
-  canConnect,
 }: {
   peers: PeerDot[];
   me: LatLng | null; // real location — only ever rendered locally
   onPeerClick: (id: string) => void;
-  canConnect: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
@@ -42,14 +40,12 @@ export default function WorldMap({
   const meMarkerRef = useRef<Marker | null>(null);
   const [ready, setReady] = useState(false);
 
-  // Marker click handlers are bound once, so read the live click handler,
-  // connectability and location through refs (synced in an effect).
+  // Marker click handlers are bound once, so read the live click handler
+  // and location through refs (synced in an effect).
   const onPeerClickRef = useRef(onPeerClick);
-  const canConnectRef = useRef(canConnect);
   const meRef = useRef(me);
   useEffect(() => {
     onPeerClickRef.current = onPeerClick;
-    canConnectRef.current = canConnect;
     meRef.current = me;
   });
 
@@ -221,9 +217,7 @@ export default function WorldMap({
         seen.add(peer.id);
         let marker = markers.get(peer.id);
         if (!marker) {
-          const el = createPeerElement(peer.id, (id) => {
-            if (canConnectRef.current) onPeerClickRef.current(id);
-          });
+          const el = createPeerElement(peer.id, (id) => onPeerClickRef.current(id));
           marker = new mapboxgl.Marker({ element: el })
             .setLngLat([peer.lng, peer.lat])
             .addTo(map);
@@ -279,7 +273,7 @@ function createPeerElement(id: string, onClick: (id: string) => void): HTMLEleme
     '<span class="peer-arrive"></span><span class="peer-ring"></span><span class="peer-core"></span><span class="peer-tip"></span>';
   el.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (el.dataset.busy !== "true") onClick(id);
+    onClick(id);
   });
   setTimeout(() => el.querySelector(".peer-arrive")?.remove(), 1700);
   return el;

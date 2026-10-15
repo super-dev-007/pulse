@@ -41,6 +41,8 @@ export async function sendSignal(
     method: "POST",
     headers: { ...auth(token), "Content-Type": "application/json" },
     body: JSON.stringify({ toId, type, payload }),
+    // Signals are sent one at a time; a hung request mustn't block the rest.
+    signal: AbortSignal.timeout(10_000),
   });
   return res.status;
 }
