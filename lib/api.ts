@@ -9,11 +9,14 @@ export class SessionExpiredError extends Error {}
 
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
+// Every call has a deadline: a request that never answers shouldn't leave
+// the UI spinning ("Finding you…" forever) or stall the poll loop.
 export async function join(lat: number, lng: number): Promise<Session> {
   const res = await fetch("/api/join", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat, lng }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`join failed: ${res.status}`);
   return res.json();
@@ -24,6 +27,7 @@ export async function poll(token: string): Promise<PollResponse> {
     method: "POST",
     headers: auth(token),
     cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
   });
   if (res.status === 401) throw new SessionExpiredError();
   if (!res.ok) throw new Error(`poll failed: ${res.status}`);
