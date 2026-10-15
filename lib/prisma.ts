@@ -16,7 +16,18 @@ function createClient() {
   if (!connectionString) {
     throw new Error("DATABASE_URL is not set");
   }
-  const adapter = new PrismaPg({ connectionString });
+  const adapter = new PrismaPg({
+    connectionString,
+    // Serverless instances are frozen between requests; a pooled connection
+    // can go dead while frozen without either side noticing, and the next
+    // query then hangs on TCP retransmits for minutes (seen in production:
+    // a join that never answered). Bound every step so a dead connection
+    // errors, gets dropped from the pool, and the client simply retries.
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 8_000,
+    idleTimeoutMillis: 10_000,
+    keepAlive: true,
+  });
   return new PrismaClient({
     adapter,
     log:

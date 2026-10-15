@@ -166,6 +166,11 @@ export default function WorldMap({
             "line-dasharray": [2, 2],
           },
         });
+
+        // People first: markers only need the style, not every tile — so a
+        // tile request that fails or hangs can't leave the globe without
+        // anyone on it ("load" waits for the initial tiles).
+        if (!cancelled) setReady(true);
       });
 
       // Spin until the user is placed on the map (or grabs the globe).
@@ -190,12 +195,7 @@ export default function WorldMap({
         spin();
       });
       map.on("moveend", spin);
-
-      map.on("load", () => {
-        if (cancelled) return;
-        setReady(true);
-        spin();
-      });
+      map.on("style.load", spin);
     })();
 
     return () => {

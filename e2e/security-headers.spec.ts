@@ -41,7 +41,8 @@ test("the app boots under its CSP without violations", async ({ browser }) => {
   await page.goto("/");
   // Clicking only works once React has hydrated, i.e. once its scripts ran.
   await page.getByRole("button", { name: "Drop onto the globe" }).click();
-  await expect(page.getByText(/online/)).toBeVisible();
+  // Generous: on a deployment the first join can include a cold start.
+  await expect(page.getByText(/online/)).toBeVisible({ timeout: 30_000 });
   expect(violations).toEqual([]);
 
   await context.close();
