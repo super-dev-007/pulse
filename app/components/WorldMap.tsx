@@ -12,6 +12,7 @@ import {
   nightPolygon,
   solarTime,
   sunElevation,
+  twilightLine,
 } from "@/lib/sky";
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
@@ -29,12 +30,10 @@ export default function WorldMap({
   peers,
   me,
   onPeerClick,
-  canConnect,
 }: {
   peers: PeerDot[];
   me: LatLng | null; // real location — only ever rendered locally
   onPeerClick: (id: string) => void;
-  canConnect: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
@@ -42,14 +41,12 @@ export default function WorldMap({
   const meMarkerRef = useRef<Marker | null>(null);
   const [ready, setReady] = useState(false);
 
-  // Marker click handlers are bound once, so read the live click handler,
-  // connectability and location through refs (synced in an effect).
+  // Marker click handlers are bound once, so read the live click handler
+  // and location through refs (synced in an effect).
   const onPeerClickRef = useRef(onPeerClick);
-  const canConnectRef = useRef(canConnect);
   const meRef = useRef(me);
   useEffect(() => {
     onPeerClickRef.current = onPeerClick;
-    canConnectRef.current = canConnect;
     meRef.current = me;
   });
 
@@ -64,44 +61,87 @@ export default function WorldMap({
       const mapboxgl = (await import("mapbox-gl")).default;
       if (cancelled || !containerRef.current) return;
       mapboxgl.accessToken = TOKEN;
+      const wide = window.innerWidth >= 1024;
       const map = new mapboxgl.Map({
         container: containerRef.current,
         style: "mapbox://styles/mapbox/dark-v11",
         projection: "globe",
         center: [-30, 25],
-        zoom: 1.5,
+        zoom: wide ? 1.9 : 1.2,
         attributionControl: true,
         logoPosition: "bottom-right",
       });
+      // On wide screens the landing copy sits on the left: keep the globe
+      // beside it rather than behind it (the fly-to clears this).
+      if (wide) {
+        map.setPadding({
+          left: Math.min(window.innerWidth * 0.42, 640),
+          top: 0,
+          right: 0,
+          bottom: 0,
+        });
+      }
       mapRef.current = map;
 
       map.on("style.load", () => {
+        // A glowing blue-violet atmosphere so the planet stands out in space.
         map.setFog({
-          color: "rgb(14, 16, 28)",
-          "high-color": "rgb(36, 22, 70)",
-          "horizon-blend": 0.06,
+          color: "rgb(30, 36, 66)",
+          "high-color": "rgb(76, 56, 180)",
+          "horizon-blend": 0.12,
           "space-color": "rgb(4, 5, 10)",
-          "star-intensity": 0.65,
+          "star-intensity": 0.6,
         });
 
-        // The night side of the planet, under the labels.
-        const firstSymbol = map
-          .getStyle()
-          .layers?.find((l) => l.type === "symbol")?.id;
-        map.addSource("night", { type: "geojson", data: nightPolygon(new Date()) });
+        // Navy land over near-black sea, so continents read at globe scale.
+        const layers = map.getStyle().layers ?? [];
+        if (layers.some((l) => l.id === "land")) {
+          map.setPaintProperty("land", "background-color", "#181c2e");
+        }
+        if (layers.some((l) => l.id === "water")) {
+          map.setPaintProperty("water", "fill-color", "#06080f");
+        }
+
+        // Labels whisper so the people (the dots) carry the map.
+        for (const layer of layers) {
+          if (layer.type === "symbol") {
+            map.setPaintProperty(layer.id, "text-opacity", 0.55);
+          }
+        }
+
+        // The night side of the planet, under the labels, with a soft
+        // twilight band along its edge instead of a hard line.
+        const firstSymbol = layers.find((l) => l.type === "symbol")?.id;
+        const now = new Date();
+        map.addSource("night", { type: "geojson", data: nightPolygon(now) });
+        map.addSource("twilight", { type: "geojson", data: twilightLine(now) });
         map.addLayer(
           {
             id: "night",
             type: "fill",
             source: "night",
-            paint: { "fill-color": "#01020a", "fill-opacity": 0.42 },
+            paint: { "fill-color": "#01020a", "fill-opacity": 0.4 },
+          },
+          firstSymbol,
+        );
+        map.addLayer(
+          {
+            id: "twilight",
+            type: "line",
+            source: "twilight",
+            paint: {
+              "line-color": "#01020a",
+              "line-opacity": 0.3,
+              "line-width": ["interpolate", ["linear"], ["zoom"], 1, 30, 4, 110, 8, 420],
+              "line-blur": ["interpolate", ["linear"], ["zoom"], 1, 30, 4, 110, 8, 420],
+            },
           },
           firstSymbol,
         );
         nightTimer = setInterval(() => {
-          (map.getSource("night") as GeoJSONSource | undefined)?.setData(
-            nightPolygon(new Date()),
-          );
+          const t = new Date();
+          (map.getSource("night") as GeoJSONSource | undefined)?.setData(nightPolygon(t));
+          (map.getSource("twilight") as GeoJSONSource | undefined)?.setData(twilightLine(t));
         }, 60_000);
 
         // Your privacy radius (visible once you zoom in).
@@ -188,7 +228,11 @@ export default function WorldMap({
         meMarkerRef.current = new mapboxgl.Marker({ element: el })
           .setLngLat([me.lng, me.lat])
           .addTo(map);
-        const target = { center: [me.lng, me.lat] as [number, number], zoom: 3.4 };
+        const target = {
+          center: [me.lng, me.lat] as [number, number],
+          zoom: 3.4,
+          padding: { left: 0, top: 0, right: 0, bottom: 0 },
+        };
         if (prefersReducedMotion()) map.jumpTo(target);
         else map.flyTo({ ...target, duration: 4200, curve: 1.6, essential: true });
       } else {
@@ -221,9 +265,7 @@ export default function WorldMap({
         seen.add(peer.id);
         let marker = markers.get(peer.id);
         if (!marker) {
-          const el = createPeerElement(peer.id, (id) => {
-            if (canConnectRef.current) onPeerClickRef.current(id);
-          });
+          const el = createPeerElement(peer.id, (id) => onPeerClickRef.current(id));
           marker = new mapboxgl.Marker({ element: el })
             .setLngLat([peer.lng, peer.lat])
             .addTo(map);
@@ -279,7 +321,7 @@ function createPeerElement(id: string, onClick: (id: string) => void): HTMLEleme
     '<span class="peer-arrive"></span><span class="peer-ring"></span><span class="peer-core"></span><span class="peer-tip"></span>';
   el.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (el.dataset.busy !== "true") onClick(id);
+    onClick(id);
   });
   setTimeout(() => el.querySelector(".peer-arrive")?.remove(), 1700);
   return el;

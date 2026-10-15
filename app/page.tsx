@@ -11,6 +11,7 @@ import IncomingCall from "./components/IncomingCall";
 import ChatPanel, { type ChatMessage } from "./components/ChatPanel";
 import VideoPanel from "./components/VideoPanel";
 import {
+  block,
   join,
   leave,
   poll,
@@ -54,6 +55,9 @@ export default function Home() {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [peerTyping, setPeerTyping] = useState(false);
+  // Mutual Reveal: has each side opted in to being seen clearly?
+  const [revealMe, setRevealMe] = useState(false);
+  const [revealThem, setRevealThem] = useState(false);
   // Sound preference survives reloads (the only thing we remember).
   const [soundOn, setSoundOn] = useState(() => {
     try {
@@ -82,6 +86,7 @@ export default function Home() {
   };
 
   const peerRef = useRef<PeerSession | null>(null);
+  const sendQueue = useRef<Promise<unknown>>(Promise.resolve());
   const msgId = useRef(0);
   const toastId = useRef(0);
   const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,7 +109,11 @@ export default function Home() {
     if (soundRef.current) sound();
   }
 
-  // Resolves to the HTTP status, or null with no session yet.
+  // Every signal we send goes out strictly in order — one at a time — so the
+  // server sees them as we produced them: an offer before its ICE
+  // candidates, and an `end` before a quick re-`request` (otherwise the
+  // request can land first and be refused as "already connected").
+  // Resolves to the HTTP status, or null with no session / on failure.
   function signal(
     toId: string,
     type: SignalType,
@@ -112,7 +121,11 @@ export default function Home() {
   ): Promise<number | null> {
     const session = sessionRef.current;
     if (!session) return Promise.resolve(null);
-    return sendSignal(session.token, toId, type, payload);
+    const sent = sendQueue.current
+      .then(() => sendSignal(session.token, toId, type, payload))
+      .catch(() => null);
+    sendQueue.current = sent;
+    return sent;
   }
 
   function addMessage(mine: boolean, text: string) {
@@ -126,30 +139,27 @@ export default function Home() {
     if (requestTimer.current) clearTimeout(requestTimer.current);
     if (connectTimer.current) clearTimeout(connectTimer.current);
     if (typingTimer.current) clearTimeout(typingTimer.current);
+    // Our conversation is over, so the server has freed them too: show them
+    // as available now rather than on the next poll.
+    const c = connRef.current;
+    if (c.kind === "connecting" || c.kind === "connected") {
+      setPeers((prev) =>
+        prev.map((p) => (p.id === c.peerId ? { ...p, busy: false } : p)),
+      );
+    }
     peerRef.current?.close();
     peerRef.current = null;
-    setLocalStream(null);
-    setRemoteStream(null);
-    setMicOn(true);
-    setCamOn(true);
+    clearVideo();
     setPeerTyping(false);
-    setVideo("none");
     setMessages([]);
     setConn({ kind: "idle" });
     if (message) notify(message);
   }
 
   function startPeer(peerId: string, initiator: boolean) {
-    // Send signaling messages one at a time so they reach the peer's mailbox
-    // in the order they were produced (an offer before its ICE candidates).
-    let outbox: Promise<void> = Promise.resolve();
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        outbox = outbox
-          .then(async () => {
-            await signal(peerId, type, payload);
-          })
-          .catch(() => {});
+        void signal(peerId, type, payload);
       },
       onChat: (text) => {
         if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -231,17 +241,42 @@ export default function Home() {
         break;
       case "video-end":
         ps?.stopVideo();
-        setLocalStream(null);
-        setRemoteStream(null);
-        setMicOn(true);
-        setCamOn(true);
-        setVideo("none");
+        clearVideo();
+        break;
+      // Mutual Reveal: the other side opted in / frosted themselves again.
+      case "reveal-on":
+        // The accepter's video goes live first, so this can arrive while
+        // our camera is still starting — keep it rather than drop it.
+        if (videoRef.current !== "none") setRevealThem(true);
+        break;
+      case "reveal-off":
+        setRevealThem(false);
         break;
     }
   }
 
+  // Back to a text-only conversation (or nothing): no streams, everything
+  // frosted again for next time.
+  function clearVideo() {
+    setLocalStream(null);
+    setRemoteStream(null);
+    setMicOn(true);
+    setCamOn(true);
+    setRevealMe(false);
+    setRevealThem(false);
+    setVideo("none");
+  }
+
   function requestConnection(peerId: string) {
-    if (connRef.current.kind !== "idle") return;
+    const c = connRef.current;
+    if (c.kind !== "idle") {
+      if (c.peerId !== peerId) notify("Finish this conversation first.");
+      return;
+    }
+    if (peers.find((p) => p.id === peerId)?.busy) {
+      notify(`${handleFor(peerId)} is talking to someone right now.`);
+      return;
+    }
     setConn({ kind: "requesting", peerId });
     void signal(peerId, "request").then((status) => {
       const c = connRef.current;
@@ -289,6 +324,15 @@ export default function Home() {
     teardown();
   }
 
+  // Ends things with them (whatever stage), and the server keeps you apart
+  // for the rest of the session: hidden from each other, requests refused.
+  function blockPeer(peerId: string) {
+    const session = sessionRef.current;
+    if (!session) return;
+    void block(session.token, peerId);
+    teardown(`${handleFor(peerId)} is blocked — you won't see each other again.`);
+  }
+
   function sendChat(text: string) {
     peerRef.current?.sendChat(text);
     addMessage(true, text);
@@ -333,11 +377,15 @@ export default function Home() {
     const ps = peerRef.current;
     ps?.stopVideo();
     ps?.sendControl("video-end");
-    setLocalStream(null);
-    setRemoteStream(null);
-    setMicOn(true);
-    setCamOn(true);
-    setVideo("none");
+    clearVideo();
+  }
+
+  // "I'm ready to be seen" — or frost me again. Clear video flows only while
+  // both sides are ready (see the effect below).
+  function toggleReveal() {
+    const on = !revealMe;
+    setRevealMe(on);
+    peerRef.current?.sendControl(on ? "reveal-on" : "reveal-off");
   }
 
   function toggleMic() {
@@ -470,6 +518,13 @@ export default function Home() {
     };
   }, [phase]);
 
+  // Send the clear camera only while both have opted in; the moment either
+  // frosts again, go back to the frosted copy.
+  const revealed = revealMe && revealThem;
+  useEffect(() => {
+    void peerRef.current?.setRevealed(revealed);
+  }, [revealed]);
+
   // Someone's calling while the tab is in the background: blink the title.
   const ringing = conn.kind === "incoming" || video === "incoming";
   useEffect(() => {
@@ -524,7 +579,6 @@ export default function Home() {
         peers={peers}
         me={myLocation}
         onPeerClick={requestConnection}
-        canConnect={conn.kind === "idle"}
       />
 
       {phase === "gate" && <EntryGate onReady={handleReady} />}
@@ -558,6 +612,7 @@ export default function Home() {
               detail={detailFor(conn.peerId)}
               onAccept={acceptIncoming}
               onDecline={declineIncoming}
+              onBlock={() => blockPeer(conn.peerId)}
             />
           )}
 
@@ -573,6 +628,7 @@ export default function Home() {
               onTyping={sendTyping}
               onStartVideo={startVideoRequest}
               onEnd={endConnection}
+              onBlock={() => blockPeer(conn.peerId)}
             />
           )}
 
@@ -601,8 +657,11 @@ export default function Home() {
               remoteStream={remoteStream}
               micOn={micOn}
               camOn={camOn}
+              revealMe={revealMe}
+              revealThem={revealThem}
               onToggleMic={toggleMic}
               onToggleCam={toggleCam}
+              onToggleReveal={toggleReveal}
               onEnd={endVideo}
             />
           )}

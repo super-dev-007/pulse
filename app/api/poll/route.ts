@@ -69,10 +69,20 @@ export async function POST(request: NextRequest) {
   }
   await sweep(now);
 
-  // 3) Online peers, excluding self (capped, freshest first).
+  // 3) Online peers, excluding self and anyone on either side of a block
+  // (capped, freshest first).
+  const blocks = await prisma.block.findMany({
+    where: {
+      hidden: true,
+      expiresAt: { gt: new Date(now) },
+      OR: [{ blockerId: id }, { blockedId: id }],
+    },
+    select: { blockerId: true, blockedId: true },
+  });
+  const hidden = blocks.map((b) => (b.blockerId === id ? b.blockedId : b.blockerId));
   const peers = await prisma.presence.findMany({
     where: {
-      id: { not: id },
+      id: { notIn: [id, ...hidden] },
       lastSeen: { gte: staleCutoff },
     },
     select: { id: true, lat: true, lng: true, busy: true },

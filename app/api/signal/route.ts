@@ -113,8 +113,15 @@ async function handleRequest(me: Me, toId: string) {
     where: { id: toId },
     select: { busy: true, lastSeen: true },
   });
+  // They said no recently, or one of us blocked the other.
   const blocked = await prisma.block.findFirst({
-    where: { blockerId: toId, blockedId: me.id, expiresAt: { gt: new Date(now) } },
+    where: {
+      expiresAt: { gt: new Date(now) },
+      OR: [
+        { blockerId: toId, blockedId: me.id },
+        { blockerId: me.id, blockedId: toId, hidden: true },
+      ],
+    },
     select: { expiresAt: true },
   });
   const online = !!target && target.lastSeen.getTime() >= now - STALE_MS;
@@ -125,6 +132,18 @@ async function handleRequest(me: Me, toId: string) {
     await deliver(toId, me.id, "decline");
     return ok({ autoDeclined: true });
   }
+  // A request opens a fresh exchange between the two of us. Anything still
+  // undelivered between us belongs to an earlier one — e.g. the hang-up
+  // `end` from a call that just finished — and would be misread as an answer
+  // to this request ("no longer around"), killing it.
+  await prisma.signal.deleteMany({
+    where: {
+      OR: [
+        { fromId: me.id, toId },
+        { fromId: toId, toId: me.id },
+      ],
+    },
+  });
   await prisma.presence.update({
     where: { id: me.id },
     data: { outgoingTo: toId },

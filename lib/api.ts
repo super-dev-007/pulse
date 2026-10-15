@@ -41,8 +41,20 @@ export async function sendSignal(
     method: "POST",
     headers: { ...auth(token), "Content-Type": "application/json" },
     body: JSON.stringify({ toId, type, payload }),
+    // Signals are sent one at a time; a hung request mustn't block the rest.
+    signal: AbortSignal.timeout(10_000),
   });
   return res.status;
+}
+
+// End things with `toId` and never see or hear from them again this session.
+export async function block(token: string, toId: string): Promise<boolean> {
+  const res = await fetch("/api/block", {
+    method: "POST",
+    headers: { ...auth(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ toId }),
+  });
+  return res.ok;
 }
 
 // Fire-and-forget leave that survives the tab closing. sendBeacon can't set

@@ -29,24 +29,42 @@ export function sunElevation(lat: number, lng: number, date: Date): number {
   return Math.asin(Math.max(-1, Math.min(1, s))) / RAD;
 }
 
-// Polygon covering the night side of the planet.
-export function nightPolygon(date: Date): GeoJSON.Feature<GeoJSON.Polygon> {
+// The day/night line (sun on the horizon), west to east.
+function terminator(date: Date): { points: [number, number][]; decl: number } {
   const sun = subsolarPoint(date);
   // Avoid tan(0) at the equinoxes.
   const decl = Math.abs(sun.lat) < 0.01 ? 0.01 : sun.lat;
-  const ring: [number, number][] = [];
+  const points: [number, number][] = [];
   for (let lng = -180; lng <= 180; lng += 2) {
     const h = (lng - sun.lng) * RAD;
     const lat = Math.atan(-Math.cos(h) / Math.tan(decl * RAD)) / RAD;
-    ring.push([lng, Math.max(-85, Math.min(85, lat))]);
+    points.push([lng, Math.max(-85, Math.min(85, lat))]);
   }
+  return { points, decl };
+}
+
+// Polygon covering the night side of the planet.
+export function nightPolygon(date: Date): GeoJSON.Feature<GeoJSON.Polygon> {
+  const { points, decl } = terminator(date);
   // Close the ring over whichever pole is in darkness.
   const darkPole = decl > 0 ? -85 : 85;
-  ring.push([180, darkPole], [-180, darkPole], ring[0]);
+  const ring = [...points, [180, darkPole], [-180, darkPole], points[0]] as [
+    number,
+    number,
+  ][];
   return {
     type: "Feature",
     properties: {},
     geometry: { type: "Polygon", coordinates: [ring] },
+  };
+}
+
+// Just the day/night line, to draw a soft twilight band along it.
+export function twilightLine(date: Date): GeoJSON.Feature<GeoJSON.LineString> {
+  return {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "LineString", coordinates: terminator(date).points },
   };
 }
 

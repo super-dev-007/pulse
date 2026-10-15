@@ -50,7 +50,7 @@ export default function EntryGate({
   }
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between bg-gradient-to-t from-space via-space/55 to-space/10 px-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-12 sm:py-10">
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between bg-gradient-to-t from-space via-space/55 to-space/10 lg:bg-gradient-to-r lg:from-space lg:via-space/60 lg:to-transparent px-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-12 sm:py-10">
       <header className="animate-fade">
         <Wordmark />
       </header>

@@ -40,11 +40,13 @@ model Signal {
 
 // Pairwise "blocked may not send blocker a request" until expiresAt — e.g. a
 // cooldown after a decline, so nobody can re-ask someone who just said no.
+// A user-initiated block also hides the two from each other's maps.
 // Deleted along with either session.
 model Block {
   blockerId String
   blockedId String
   expiresAt DateTime
+  hidden    Boolean  @default(false)
 
   @@id([blockerId, blockedId])
   @@index([blockedId])
