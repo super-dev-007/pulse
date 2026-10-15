@@ -21,6 +21,8 @@ type Conn =
 type VideoState = "none" | "requesting" | "incoming" | "active";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+// After an accept, how long the data channel gets to open before we give up.
+const CONNECT_TIMEOUT_MS = 25_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
@@ -33,6 +35,7 @@ export default function Home() {
   const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
     null,
   );
+  const locationRef = useRef(myLocation);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -51,6 +54,7 @@ export default function Home() {
   const peerRef = useRef<PeerSession | null>(null);
   const msgId = useRef(0);
   const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showNotice(text: string) {
     setNotice(text);
@@ -63,6 +67,7 @@ export default function Home() {
 
   function teardown(message?: string) {
     if (requestTimer.current) clearTimeout(requestTimer.current);
+    if (connectTimer.current) clearTimeout(connectTimer.current);
     peerRef.current?.close();
     peerRef.current = null;
     setLocalStream(null);
@@ -74,23 +79,48 @@ export default function Home() {
   }
 
   function startPeer(peerId: string, initiator: boolean) {
+    // Send signaling messages one at a time so they reach the peer's mailbox
+    // in the order they were produced (an offer before its ICE candidates).
+    let outbox: Promise<void> = Promise.resolve();
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        void sendSignal(sessionId, peerId, type, payload);
+        outbox = outbox
+          .then(() => sendSignal(sessionId, peerId, type, payload))
+          .catch(() => {});
       },
       onChat: (text) => addMessage(false, text),
       onControl: (ctrl) => handleControl(ctrl),
       onRemoteStream: (stream) => setRemoteStream(stream),
       onConnectionState: (state) => {
-        if (state === "failed") {
-          teardown("Connection failed (network).");
+        if (state === "failed" && peerRef.current === ps) {
+          dropConnection("Connection failed (network).");
         }
       },
       onChannelOpen: () => {
+        if (peerRef.current !== ps) return;
+        if (connectTimer.current) clearTimeout(connectTimer.current);
         setConn({ kind: "connected", peerId });
+      },
+      onChannelClose: () => {
+        if (peerRef.current === ps) dropConnection("Stranger disconnected.");
       },
     });
     peerRef.current = ps;
+    connectTimer.current = setTimeout(() => {
+      if (peerRef.current === ps && connRef.current.kind === "connecting") {
+        dropConnection("Couldn't reach the stranger.");
+      }
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  // The link to the peer died without an `end` from them (tab killed, network
+  // lost, never came up). Tell the server so the pair is freed, then reset.
+  function dropConnection(message: string) {
+    const c = connRef.current;
+    if (c.kind === "connecting" || c.kind === "connected") {
+      void sendSignal(sessionId, c.peerId, "end");
+    }
+    teardown(message);
   }
 
   function handleControl(ctrl: PeerControl) {
@@ -224,6 +254,11 @@ export default function Home() {
           if (requestTimer.current) clearTimeout(requestTimer.current);
           startPeer(sig.fromId, true);
           setConn({ kind: "connecting", peerId: sig.fromId });
+        } else {
+          // We already gave up on this request (cancelled / timed out) but
+          // they accepted anyway. Say so, or they'd sit in "Connecting…"
+          // with the server holding them busy.
+          void sendSignal(sessionId, sig.fromId, "end");
         }
         break;
       }
@@ -251,13 +286,9 @@ export default function Home() {
       }
       case "end": {
         const c = connRef.current;
-        if (
-          (c.kind === "incoming" ||
-            c.kind === "connecting" ||
-            c.kind === "connected") &&
-          c.peerId === sig.fromId
-        ) {
+        if (c.kind !== "idle" && c.peerId === sig.fromId) {
           if (c.kind === "incoming") setConn({ kind: "idle" });
+          else if (c.kind === "requesting") teardown("They're no longer available.");
           else teardown("Stranger disconnected.");
         }
         break;
@@ -279,6 +310,10 @@ export default function Home() {
       try {
         const data = await poll(sessionId);
         if (!active) return;
+        // We were reaped while away (a backgrounded tab's timers get
+        // throttled past STALE_MS) — put ourselves back on the map.
+        const loc = locationRef.current;
+        if (!data.present && loc) await join(sessionId, loc.lat, loc.lng);
         setPeers(data.peers);
         for (const s of data.signals) processSignalRef.current(s);
       } catch {}
@@ -294,7 +329,11 @@ export default function Home() {
 
   useEffect(() => {
     if (!sessionId || phase !== "live") return;
-    const onLeave = () => leave(sessionId);
+    const onLeave = () => {
+      const c = connRef.current;
+      const pending = c.kind === "requesting" || c.kind === "incoming";
+      leave(sessionId, pending ? c.peerId : undefined);
+    };
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);
     return () => {
@@ -304,6 +343,7 @@ export default function Home() {
   }, [sessionId, phase]);
 
   async function handleReady(lat: number, lng: number) {
+    locationRef.current = { lat, lng };
     setMyLocation({ lat, lng });
     await join(sessionId, lat, lng);
     setPhase("live");

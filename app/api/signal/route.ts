@@ -69,17 +69,41 @@ export async function POST(request: NextRequest) {
   }
 
   // Busy transitions:
-  // - accept: the connection is now active → mark BOTH peers busy.
-  // - decline/end: free both peers.
+  // - accept: the connection is now active → pair both peers (busy).
+  // - end: free the pair — but only if they're paired *with each other*, so a
+  //   late `end` (say, for a cancelled request) can't free a user who has
+  //   since connected to someone else.
+  // - decline: nobody is busy before an accept, so it leaves busy alone.
   if (signalType === "accept") {
-    await prisma.presence.updateMany({
-      where: { id: { in: [fromId, toId] } },
-      data: { busy: true },
+    // `fromId` accepted `toId`'s request. If the requester has gone (or got
+    // connected elsewhere meanwhile), tell the accepter instead of pairing.
+    const requester = await prisma.presence.findUnique({
+      where: { id: toId },
+      select: { busy: true },
     });
-  } else if (signalType === "decline") {
+    if (!requester || requester.busy) {
+      await prisma.signal.create({
+        data: { fromId: toId, toId: fromId, type: "end", payload: null },
+      });
+      return Response.json({ ok: true, ended: true });
+    }
     await prisma.presence.updateMany({
-      where: { id: { in: [fromId, toId] } },
-      data: { busy: false },
+      where: { id: fromId },
+      data: { busy: true, partnerId: toId },
+    });
+    await prisma.presence.updateMany({
+      where: { id: toId },
+      data: { busy: true, partnerId: fromId },
+    });
+  } else if (signalType === "end") {
+    await prisma.presence.updateMany({
+      where: {
+        OR: [
+          { id: fromId, partnerId: toId },
+          { id: toId, partnerId: fromId },
+        ],
+      },
+      data: { busy: false, partnerId: null },
     });
   }
 

@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
+import { releasePartners } from "@/lib/presence-server";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -21,15 +22,26 @@ export async function GET(request: NextRequest) {
   const staleCutoff = new Date(now - STALE_MS);
   const signalCutoff = new Date(now - SIGNAL_TTL_MS);
 
-  // 1) Heartbeat — refresh lastSeen for the caller.
-  await prisma.presence.updateMany({
-    where: {},
+  // 1) Heartbeat — refresh lastSeen for the caller only. (An empty `where`
+  // here refreshed *every* row, so nobody ever went stale while anyone was
+  // still polling.)
+  const heartbeat = await prisma.presence.updateMany({
+    where: { id },
     data: { lastSeen: new Date(now) },
   });
 
   // 2) Reap stale presence rows and orphaned signals (independent deletes —
   // no atomicity needed, and avoids transactions over a PgBouncer pooler).
-  await prisma.presence.deleteMany({ where: { lastSeen: { lt: staleCutoff } } });
+  // Anyone mid-conversation with a reaped user is released and told.
+  const stale = await prisma.presence.findMany({
+    where: { lastSeen: { lt: staleCutoff } },
+    select: { id: true },
+  });
+  if (stale.length > 0) {
+    const staleIds = stale.map((s) => s.id);
+    await prisma.presence.deleteMany({ where: { id: { in: staleIds } } });
+    await releasePartners(staleIds);
+  }
   await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
 
   // 3) Online peers, excluding self.
@@ -54,6 +66,9 @@ export async function GET(request: NextRequest) {
   }
 
   const response: PollResponse = {
+    // No row to heartbeat means the caller was reaped while away (e.g. a
+    // backgrounded tab whose timers were throttled) — the client re-joins.
+    present: heartbeat.count > 0,
     peers: peers.map((p) => ({
       id: p.id,
       lat: p.lat,
