@@ -30,7 +30,11 @@ export async function enter(
   const joined = page.waitForResponse(/\/api\/join$/);
   await page.getByRole("button", { name: "Drop onto the globe" }).click();
   const { id } = (await (await joined).json()) as { id: string };
-  await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
+  // Markers only render once the map has fully loaded (style + tiles), which
+  // can take a while with two software-rendered globes on one machine.
+  await expect(page.locator('[data-map-ready="true"]')).toBeAttached({
+    timeout: 45_000,
+  });
   return { context, page, id };
 }
 

@@ -292,7 +292,7 @@ export default function WorldMap({
   }, [peers, ready]);
 
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0" data-map-ready={ready}>
       <div ref={containerRef} className="h-full w-full bg-space" />
 
       {!TOKEN && (
