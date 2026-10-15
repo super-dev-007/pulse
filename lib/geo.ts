@@ -5,12 +5,19 @@
 
 const KM_PER_DEG_LAT = 111.32;
 
+// Cryptographic randomness: Math.random()'s generator state can be recovered
+// from a few outputs, and a user who joins from known coordinates sees the
+// exact offset they got — enough, in principle, to predict the next user's.
+function secureRandom(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
+}
+
 export function applyPrivacyOffset(
   lat: number,
   lng: number,
 ): { lat: number; lng: number } {
-  const distanceKm = 1 + Math.random() * 2; // 1–3 km
-  const bearing = Math.random() * 2 * Math.PI; // random direction
+  const distanceKm = 1 + secureRandom() * 2; // 1–3 km
+  const bearing = secureRandom() * 2 * Math.PI; // random direction
 
   const dLat = (distanceKm * Math.cos(bearing)) / KM_PER_DEG_LAT;
   const latRad = (lat * Math.PI) / 180;
