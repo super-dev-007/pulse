@@ -6,7 +6,8 @@ import Orb from "./Orb";
 import { handleFor } from "@/lib/identity";
 
 // "Someone wants to talk" / "…wants to turn on video": a ringing card that
-// takes focus. Enter accepts, Escape declines.
+// takes focus once when it appears and keeps Tab inside it. Enter accepts,
+// Escape declines.
 export default function IncomingCall({
   peerId,
   kind,
@@ -25,17 +26,44 @@ export default function IncomingCall({
   onBlock?: () => void;
 }) {
   const acceptRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // The parent re-renders on every poll with fresh callbacks; read the latest
+  // through a ref so this effect runs once — re-running it would yank focus
+  // back to Accept every 1.5s (and Enter would accept instead of, say, block).
+  const declineRef = useRef(onDecline);
+  useEffect(() => {
+    declineRef.current = onDecline;
+  });
   useEffect(() => {
     acceptRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onDecline();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        declineRef.current();
+        return;
+      }
+      const dialog = dialogRef.current;
+      if (e.key !== "Tab" || !dialog) return;
+      const buttons = dialog.querySelectorAll<HTMLElement>("button");
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      const inside = dialog.contains(document.activeElement);
+      if (!inside || (e.shiftKey && document.activeElement === first)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onDecline]);
+  }, []);
 
   const name = handleFor(peerId);
   return (
     <div className="absolute inset-0 z-40 grid animate-fade place-items-center bg-space/60 p-5 backdrop-blur-[2px]">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="incoming-title"

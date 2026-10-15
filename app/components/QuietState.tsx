@@ -28,8 +28,8 @@ export default function QuietState({ alone }: { alone: boolean }) {
   }
 
   return (
-    <div className="absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:pb-8">
-      <div className="glass w-full max-w-sm animate-sheet rounded-3xl p-5">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:pb-8">
+      <div className="glass pointer-events-auto w-full max-w-sm animate-sheet rounded-3xl p-5">
         <p className="font-display text-2xl text-white">It&rsquo;s quiet out here.</p>
         <p className="mt-1.5 text-sm leading-relaxed text-white/55">
           You&rsquo;re the only light on the globe right now. Send the link to a

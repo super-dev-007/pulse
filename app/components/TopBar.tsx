@@ -35,7 +35,7 @@ export default function TopBar({
   }, [open]);
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-5 sm:pt-5">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-start justify-between gap-3 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-5 sm:pt-5">
       <div className="glass pointer-events-auto flex animate-rise items-center gap-3 rounded-full py-2 pr-4 pl-3">
         <Wordmark size="sm" />
         <span className="h-4 w-px bg-white/15" />

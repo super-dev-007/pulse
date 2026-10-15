@@ -128,9 +128,13 @@ body {
   pointer-events: none;
 }
 
-.peer:hover .peer-core,
 .peer:focus-visible .peer-core {
   transform: scale(1.55);
+}
+@media (hover: hover) {
+  .peer:hover .peer-core {
+    transform: scale(1.55);
+  }
 }
 
 .peer:focus-visible {
@@ -193,10 +197,17 @@ body {
 .peer-tip span {
   color: rgb(238 240 247 / 0.6);
 }
-.peer:hover .peer-tip,
+/* Keyboard focus shows the card everywhere; hover only where hovering exists
+   — on touch screens :hover sticks after a tap and the card stayed up. */
 .peer:focus-visible .peer-tip {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+@media (hover: hover) {
+  .peer:hover .peer-tip {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 /* You: rose, with a double beat. */
