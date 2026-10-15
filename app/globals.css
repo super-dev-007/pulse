@@ -1,79 +1,346 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-instrument-serif);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Pulse palette: a night globe. Rose is "you" and every primary action;
+   warm gold is everyone else — city lights seen from orbit. */
+@theme {
+  --color-space: #04050a;
+  --color-night: #0b0e17;
+  --color-pulse: #ff4f7b;
+  --color-pulse-soft: #ff8fab;
+  --color-glow: #ffd27a;
+  --color-sky: #8bd8ff;
+  --color-mint: #5eead4;
+
+  --animate-rise: rise 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-fade: fade 0.6s ease both;
+  --animate-sheet: sheet 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-pop: pop 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-space);
+  color: #eef0f7;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Frosted surfaces floating over the globe. */
+@utility glass {
+  background: rgb(12 14 23 / 0.62);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow:
+    0 24px 60px -20px rgb(0 0 0 / 0.75),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+@utility glow-pulse {
+  box-shadow:
+    0 0 0 1px rgb(255 79 123 / 0.35),
+    0 10px 40px -8px rgb(255 79 123 / 0.6);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
 }
 
-/* Live user dots on the map */
-.pulse-dot {
+@keyframes sheet {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* ── Map markers ─────────────────────────────────────────────────────── */
+
+.peer {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  outline: none;
+}
+
+.peer-core {
+  width: 11px;
+  height: 11px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 35% 35%, #fff6dc, var(--color-glow) 60%);
+  box-shadow:
+    0 0 10px 2px rgb(255 210 122 / 0.75),
+    0 0 28px 6px rgb(255 190 90 / 0.35);
+  transition:
+    transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.4),
+    opacity 0.3s ease;
+}
+
+/* Each person's own heartbeat: duration/delay come from their id. */
+.peer-ring {
+  position: absolute;
+  inset: 9px;
+  border-radius: 9999px;
+  border: 1.5px solid rgb(255 210 122 / 0.85);
+  animation: heartbeat var(--beat, 2s) cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+  animation-delay: var(--beat-delay, 0s);
+  pointer-events: none;
+}
+
+.peer:hover .peer-core,
+.peer:focus-visible .peer-core {
+  transform: scale(1.55);
+}
+
+.peer:focus-visible {
+  border-radius: 9999px;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.6);
+}
+
+/* In a conversation: a dim, steady ember instead of a heartbeat. */
+.peer[data-busy="true"] {
+  cursor: not-allowed;
+}
+.peer[data-busy="true"] .peer-core {
+  opacity: 0.35;
+  box-shadow: 0 0 8px 1px rgb(255 210 122 / 0.3);
+}
+.peer[data-busy="true"] .peer-ring {
+  animation: none;
+  opacity: 0.25;
+  transform: scale(1.4);
+  border-style: dashed;
+}
+
+/* A ripple when someone new appears. */
+.peer-arrive {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid rgb(255 210 122 / 0.9);
+  animation: arrive 1.6s ease-out forwards;
+  pointer-events: none;
+}
+
+/* Hover card: who's behind the dot. */
+.peer-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, 4px);
+  white-space: nowrap;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font: 500 12px/1.35 var(--font-geist-sans), system-ui, sans-serif;
+  color: #eef0f7;
+  text-align: left;
+  background: rgb(12 14 23 / 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  box-shadow: 0 12px 30px -10px rgb(0 0 0 / 0.8);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+.peer-tip b {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.peer-tip span {
+  color: rgb(238 240 247 / 0.6);
+}
+.peer:hover .peer-tip,
+.peer:focus-visible .peer-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* You: rose, with a double beat. */
+.me {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.me-core {
   width: 14px;
   height: 14px;
   border-radius: 9999px;
-  border: 2px solid rgba(255, 255, 255, 0.9);
-  cursor: pointer;
-  padding: 0;
-  box-shadow: 0 0 0 rgba(255, 255, 255, 0.5);
-  animation: pulse-ring 2s ease-out infinite;
-  transition: transform 0.1s ease;
+  background: radial-gradient(circle at 35% 35%, #fff, var(--color-pulse) 55%);
+  border: 2px solid #fff;
+  box-shadow: 0 0 18px 4px rgb(255 79 123 / 0.7);
 }
-
-.pulse-dot:hover {
-  transform: scale(1.3);
-}
-
-/* The user's own "you are here" pin — small, sized like the dots. */
-.pulse-me {
-  position: relative;
-  font-size: 18px;
-  line-height: 1;
-  cursor: default;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-.pulse-me-label {
+.me-ring {
   position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  margin-bottom: 1px;
-  font-size: 10px;
-  font-weight: 700;
-  color: #ffffff;
-  background: rgba(0, 0, 0, 0.6);
-  padding: 0 5px;
+  inset: 12px;
   border-radius: 9999px;
-  white-space: nowrap;
+  border: 2px solid rgb(255 79 123 / 0.9);
+  animation: heartbeat 2.2s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+.me-ring + .me-ring {
+  animation-delay: 0.28s;
+}
+.me-label {
+  position: absolute;
+  top: calc(100% - 4px);
+  font: 600 10px/1 var(--font-geist-sans), system-ui, sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 6px rgb(0 0 0 / 0.9);
 }
 
-@keyframes pulse-ring {
+@keyframes heartbeat {
   0% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4);
+    transform: scale(1);
+    opacity: 0.9;
   }
-  70% {
-    box-shadow: 0 0 0 8px rgba(255, 255, 255, 0);
-  }
+  70%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+
+@keyframes arrive {
+  from {
+    transform: scale(0.4);
+    opacity: 1;
+  }
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+/* A bright pulse travelling along the wordmark's (faint) ECG line. */
+.ecg-path {
+  stroke-dasharray: 22 90;
+  animation: ecg 1.9s cubic-bezier(0.5, 0, 0.3, 1) infinite;
+}
+@keyframes ecg {
+  from {
+    stroke-dashoffset: 112;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* The request timeout running out (--ring = the circle's circumference). */
+@keyframes countdown {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: var(--ring);
+  }
+}
+
+/* Concentric rings behind an incoming call. */
+.ringing span {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid currentColor;
+  animation: ring-out 2.4s ease-out infinite;
+}
+.ringing span:nth-child(2) {
+  animation-delay: 0.8s;
+}
+.ringing span:nth-child(3) {
+  animation-delay: 1.6s;
+}
+@keyframes ring-out {
+  from {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+.typing-dot {
+  animation: typing 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Mapbox chrome, toned down to fit. */
+.mapboxgl-ctrl-attrib,
+.mapboxgl-ctrl-logo {
+  opacity: 0.45;
+}
+.mapboxgl-ctrl-attrib {
+  background: transparent !important;
+}
+.mapboxgl-ctrl-attrib a {
+  color: rgb(238 240 247 / 0.7) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .peer-ring,
+  .me-ring {
+    display: none;
   }
 }
