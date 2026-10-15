@@ -1,13 +1,14 @@
 # Pulse — Notes
 
-**Live:** _VERCEL_URL_ · **Repo:** https://github.com/super-dev-007/pulse
+**Live:** https://pulse-cyan-phi.vercel.app · **Repo:** https://github.com/super-dev-007/pulse
 
 **Try it:** open the live URL in two windows (normal + incognito), set a different location in each (DevTools → Sensors), then *Drop onto the globe* → tap the other dot → accept → chat → *Start video* → both tap **Reveal me**.
 
 ## How I worked
-- One branch + PR per phase ([#1](https://github.com/super-dev-007/pulse/pull/1) run · [#2](https://github.com/super-dev-007/pulse/pull/2) secure · #3 good · #4 better), merged with merge commits so each step stays visible. Commit messages explain *why*, not just what.
+- One branch + PR per phase ([#1](https://github.com/super-dev-007/pulse/pull/1) run · [#2](https://github.com/super-dev-007/pulse/pull/2) secure · [#3](https://github.com/super-dev-007/pulse/pull/3) good · [#4](https://github.com/super-dev-007/pulse/pull/4) better), merged with merge commits so each step stays visible. Commit messages explain *why*, not just what.
 - Order: **1 → 3 → 2 → 4**. Security changes the API the UI sits on, so the redesign was built on the final API.
-- For server bugs: reproduce with a test, fix, keep the test. **30 Playwright tests**: API/state-machine/security, a two-browser E2E (fake camera), and a pixel-level Mutual Reveal test. `npm run test:e2e`.
+- For server bugs: reproduce with a test, fix, keep the test. **31 Playwright tests**: API/state-machine/security, a two-browser E2E (fake camera), and a pixel-level Mutual Reveal test. `npm run test:e2e`. The browser tests also pass against the live deployment (`E2E_BASE_URL=https://pulse-cyan-phi.vercel.app`).
+- Once the real map was available, the two-browser test caught three more connection races (a quick call-back killed by the previous call's hang-up, out-of-order signals, silently ignored taps). A screenshot review of the whole journey caught five visual issues. All are fixed in #4.
 
 ## Phase 1 — Make it run
 **How I found them:** I traced one connection end to end (presence → request/accept → SDP/ICE through the mailbox → data channel), then reproduced each server bug as an API test. I also re-introduced bug 1 to confirm its test fails on the original code.
