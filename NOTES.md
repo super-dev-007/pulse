@@ -7,8 +7,9 @@
 ## How I worked
 - One branch + PR per phase ([#1](https://github.com/super-dev-007/pulse/pull/1) run · [#2](https://github.com/super-dev-007/pulse/pull/2) secure · [#3](https://github.com/super-dev-007/pulse/pull/3) good · [#4](https://github.com/super-dev-007/pulse/pull/4) better), merged with merge commits so each step stays visible. Commit messages explain *why*, not just what.
 - Order: **1 → 3 → 2 → 4**. Security changes the API the UI sits on, so the redesign was built on the final API.
-- For server bugs: reproduce with a test, fix, keep the test. **31 Playwright tests**: API/state-machine/security, a two-browser E2E (fake camera), and a pixel-level Mutual Reveal test. `npm run test:e2e`. The browser tests also pass against the live deployment (`E2E_BASE_URL=https://pulse-cyan-phi.vercel.app`).
+- For server bugs: reproduce with a test, fix, keep the test. **37 Playwright tests**: API/state-machine/security, two-browser E2Es (fake camera, five video calls in one chat), and a pixel-level Mutual Reveal test. `npm run test:e2e`. The browser tests also pass against the live deployment (`E2E_BASE_URL=https://pulse-cyan-phi.vercel.app`).
 - Once the real map was available, the two-browser test caught three more connection races (a quick call-back killed by the previous call's hang-up, out-of-order signals, silently ignored taps). A screenshot review of the whole journey caught five visual issues. All are fixed in #4.
+- **Final review pass:** two independent reviewers (server / client) audited everything A to Z. Their verified findings are fixed in [#6](https://github.com/super-dev-007/pulse/pull/6), each with a test where it can be reproduced — see below.
 
 ## Phase 1 — Make it run
 **How I found them:** I traced one connection end to end (presence → request/accept → SDP/ICE through the mailbox → data channel), then reproduced each server bug as an API test. I also re-introduced bug 1 to confirm its test fails on the original code.
@@ -67,8 +68,20 @@ Reviewed as an attacker who can see the map and call the API directly. Ranked by
 
 **Next, with more time:** on-device nudity detection that auto-frosts an incoming feed even after reveal (still no server); a TURN relay so peers don't learn each other's IP; voice-first reveal stages; distinct-reporter counts that rate-limit abusive sessions; viewport-scoped polling + clustering for scale.
 
+## Final review pass (#6)
+- **Camera leak (high):** the call ending while the permission prompt was open left the camera on with nothing to stop it, and a double-click opened two cameras. Camera opens are now de-duplicated, and a late one is released.
+- **Consent carried over:** a failed camera start could leave the other side's "ready to reveal" set for the next call in that chat. Every exit from video now resets consent.
+- **Races without transactions:** accept → leave could strand someone busy with a ghost. Pairing is now two compare-and-sets with undo, and each poll self-heals the caller's links.
+- **Fairer requests:** an automatic "busy" reply no longer triggers the 60s cooldown; two people tapping each other at once now connect; requests expire server-side (35s) so a lost withdraw can't lock anyone out.
+- **Privacy:** IP keys are HMAC'd (a plain hash of IPv4 is reversible); offsets use crypto randomness; a returning session past its grace period is refused; cleanup also runs from the landing page plus a daily Vercel cron, so nothing lingers when there's no traffic.
+- **Stuck video requests:** both asking at once is a yes from both sides; unanswered requests time out and can be cancelled.
+- **Accessibility and overlaps:** the incoming-call dialog stole focus every poll (Enter could accept instead of block); it now focuses once and traps Tab. Plus fixes for the popover hidden under the chat, sticky hover cards on touch, and the globe not draggable behind the bottom cards.
+
 ## Assumptions & trade-offs
 - **Polling, not WebSockets** (brief: Vercel serverless). Per-poll DB work trimmed: cleanup is swept per instance at most every 10s.
+- **Mailbox delivery is at-most-once:** a poll response lost in transit loses its signals; the request/connect/video timeouts recover. Proper fix: ack-based delivery.
+- **Repeated video calls in one chat** grow the session description by ~7 KB each (`removeTrack` leaves idle slots), allowed up to 128 KB (~16 calls). Stopping transceivers keeps it flat, but measured over polled signaling it broke the 3rd call's media, so I kept the reliable path. Next: reuse transceivers via `replaceTrack`.
+- **Cron:** Vercel Hobby runs it daily. Set `CRON_SECRET` in Vercel to lock the endpoint; without it, it's public but rate-limited and harmless.
 - **2-minute grace** keeps a stale session's *offset* position (never the raw location) so a returning tab resumes; a clean leave deletes immediately.
 - **Dynamic rendering** of the single page so the CSP can carry a nonce; cost is negligible for one page.
 - Kept **Mapbox** as specified. Schema changes ship as Prisma migrations; `npx prisma db push` still works on a fresh database.

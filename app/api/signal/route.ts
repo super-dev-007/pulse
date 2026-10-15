@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   DECLINE_COOLDOWN_MS,
   MAILBOX_CAP,
+  REQUEST_TTL_MS,
   REQUESTS_PER_MIN,
   SIGNALS_PER_MIN,
   STALE_MS,
@@ -25,7 +26,12 @@ const VALID_TYPES: SignalType[] = [
   "end",
 ];
 
-type Me = { id: string; partnerId: string | null; outgoingTo: string | null };
+type Me = {
+  id: string;
+  partnerId: string | null;
+  outgoingTo: string | null;
+  outgoingAt: Date | null;
+};
 
 // POST /api/signal — Authorization: Bearer <token>, body { toId, type, payload? }
 // Drops one message into the recipient's mailbox — but only if it's a legal
@@ -34,8 +40,13 @@ type Me = { id: string; partnerId: string | null; outgoingTo: string | null };
 //
 //   request              idle sender → online, free recipient (pending)
 //   accept / decline     only answers a request the recipient sent *you*
+//                        (decline = "no": the asker gets a cooldown)
 //   offer / answer / ice only between connected partners
-//   end                  hang up your partner, or withdraw your own request
+//   end                  hang up your partner, withdraw your own request, or
+//                        "not now" to a request sent to you (no cooldown)
+//
+// There are no transactions (PgBouncer), so every state change is a
+// compare-and-set; a write that loses a race changes nothing.
 //
 // Anything else is dropped, so nobody can pair, free, or push WebRTC payloads
 // at people they aren't actually talking to. Busy/partner state follows the
@@ -100,7 +111,9 @@ async function handleRequest(me: Me, toId: string) {
   if (me.partnerId) {
     return Response.json({ error: "already connected" }, { status: 409 });
   }
-  if (me.outgoingTo) {
+  const now = Date.now();
+  const live = (at: Date | null) => !!at && at.getTime() >= now - REQUEST_TTL_MS;
+  if (me.outgoingTo && live(me.outgoingAt)) {
     // One pending request at a time — no fanning out to the whole map.
     return Response.json({ error: "request already pending" }, { status: 409 });
   }
@@ -108,11 +121,16 @@ async function handleRequest(me: Me, toId: string) {
     return tooManyRequests(60);
   }
 
-  const now = Date.now();
   const target = await prisma.presence.findUnique({
     where: { id: toId },
-    select: { busy: true, lastSeen: true },
+    select: { busy: true, lastSeen: true, outgoingTo: true, outgoingAt: true },
   });
+  // They tapped us first and that request is still open: a mutual tap. Leave
+  // their request in place — our client sees it and accepts it — rather than
+  // turning each other down.
+  if (target?.outgoingTo === me.id && live(target.outgoingAt)) {
+    return ok({ crossing: true });
+  }
   // They said no recently, or one of us blocked the other.
   const blocked = await prisma.block.findFirst({
     where: {
@@ -124,11 +142,21 @@ async function handleRequest(me: Me, toId: string) {
     },
     select: { expiresAt: true },
   });
+  // Mid-request themselves, or already being asked by someone else.
+  const occupied =
+    !!target &&
+    ((!!target.outgoingTo && live(target.outgoingAt)) ||
+      (await prisma.presence.count({
+        where: {
+          outgoingTo: toId,
+          outgoingAt: { gte: new Date(now - REQUEST_TTL_MS) },
+        },
+      })) > 0);
   const online = !!target && target.lastSeen.getTime() >= now - STALE_MS;
-  if (!online || target.busy || blocked) {
-    // Offline, already talking to someone, or recently said no to us: decline
-    // on their behalf. Deliberately indistinguishable, so a cooldown (or a
-    // block) can't be detected and nobody gets re-prompted.
+  if (!online || target.busy || occupied || blocked) {
+    // Offline, busy, or recently said no to us: decline on their behalf
+    // (no cooldown — they never chose). Deliberately indistinguishable, so a
+    // cooldown or block can't be detected, and nobody gets re-prompted.
     await deliver(toId, me.id, "decline");
     return ok({ autoDeclined: true });
   }
@@ -144,35 +172,65 @@ async function handleRequest(me: Me, toId: string) {
       ],
     },
   });
-  await prisma.presence.update({
-    where: { id: me.id },
-    data: { outgoingTo: toId },
+  // Take our single request slot atomically, so parallel requests can't
+  // fan out (an expired request may be replaced).
+  const claimed = await prisma.presence.updateMany({
+    where: {
+      id: me.id,
+      partnerId: null,
+      OR: [
+        { outgoingTo: null },
+        { outgoingAt: null },
+        { outgoingAt: { lt: new Date(now - REQUEST_TTL_MS) } },
+      ],
+    },
+    data: { outgoingTo: toId, outgoingAt: new Date(now) },
   });
+  if (claimed.count === 0) {
+    return Response.json({ error: "request already pending" }, { status: 409 });
+  }
+  // The expired request we just replaced: dismiss its prompt over there.
+  if (me.outgoingTo && me.outgoingTo !== toId) {
+    await deliver(me.id, me.outgoingTo, "end");
+  }
   await deliver(me.id, toId, "request");
   return ok();
 }
 
 async function handleAccept(me: Me, toId: string) {
-  // Claim the requester with a compare-and-set: it only succeeds if they're
-  // still waiting on *us* and haven't connected elsewhere in the meantime.
-  const claimed =
-    me.partnerId === null &&
-    (
-      await prisma.presence.updateMany({
-        where: { id: toId, outgoingTo: me.id, partnerId: null },
-        data: { busy: true, partnerId: me.id, outgoingTo: null },
-      })
-    ).count === 1;
-  if (!claimed) {
-    // The request was withdrawn, or they left / connected elsewhere: tell the
-    // accepter so they don't sit in "Connecting…".
+  // Pair with two compare-and-sets: claim ourselves (we must be free), then
+  // the requester (still waiting on *us*, request not expired, not connected
+  // elsewhere). If the second fails, undo the first.
+  const mine = await prisma.presence.updateMany({
+    where: { id: me.id, partnerId: null },
+    data: { busy: true, partnerId: toId, outgoingTo: null, outgoingAt: null },
+  });
+  if (mine.count === 0) {
+    return Response.json({ error: "already connected" }, { status: 409 });
+  }
+  const theirs = await prisma.presence.updateMany({
+    where: {
+      id: toId,
+      outgoingTo: me.id,
+      partnerId: null,
+      outgoingAt: { gte: new Date(Date.now() - REQUEST_TTL_MS) },
+    },
+    data: { busy: true, partnerId: me.id, outgoingTo: null, outgoingAt: null },
+  });
+  if (theirs.count === 0) {
+    await prisma.presence.updateMany({
+      where: { id: me.id, partnerId: toId },
+      data: { busy: false, partnerId: null },
+    });
+    // The request was withdrawn or expired, or they left / connected
+    // elsewhere: tell the accepter so they don't sit in "Connecting…".
     await deliver(toId, me.id, "end");
     return ok({ ended: true });
   }
-  await prisma.presence.update({
-    where: { id: me.id },
-    data: { busy: true, partnerId: toId, outgoingTo: null },
-  });
+  // Had we asked someone else meanwhile? That request is gone now — say so.
+  if (me.outgoingTo && me.outgoingTo !== toId) {
+    await deliver(me.id, me.outgoingTo, "end");
+  }
   await deliver(me.id, toId, "accept");
   return ok();
 }
@@ -180,7 +238,7 @@ async function handleAccept(me: Me, toId: string) {
 async function handleDecline(me: Me, toId: string) {
   const { count } = await prisma.presence.updateMany({
     where: { id: toId, outgoingTo: me.id },
-    data: { outgoingTo: null },
+    data: { outgoingTo: null, outgoingAt: null },
   });
   if (count === 0) return ok({ dropped: true }); // no request to decline
   await coolDown(me.id, toId, DECLINE_COOLDOWN_MS);
@@ -215,12 +273,18 @@ async function handleEnd(me: Me, toId: string) {
     });
   } else if (me.outgoingTo === toId) {
     // Withdraw our pending request (cancelled or timed out).
-    await prisma.presence.update({
-      where: { id: me.id },
-      data: { outgoingTo: null },
+    await prisma.presence.updateMany({
+      where: { id: me.id, outgoingTo: toId },
+      data: { outgoingTo: null, outgoingAt: null },
     });
   } else {
-    return ok({ dropped: true }); // nothing between us to end
+    // "Not now" to a request sent to us while we were busy or mid-request:
+    // turn it down without the cooldown an explicit decline carries.
+    const { count } = await prisma.presence.updateMany({
+      where: { id: toId, outgoingTo: me.id },
+      data: { outgoingTo: null, outgoingAt: null },
+    });
+    if (count === 0) return ok({ dropped: true }); // nothing between us to end
   }
   await deliver(me.id, toId, "end");
   return ok();

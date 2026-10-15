@@ -24,7 +24,7 @@ import { POLL_INTERVAL_MS } from "@/lib/presence";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 import { handleFor } from "@/lib/identity";
 import { distanceKm, formatDistance, solarTime, sunElevation } from "@/lib/sky";
-import { blip, chime, unlockAudio } from "@/lib/sound";
+import { blip, chime } from "@/lib/sound";
 
 type Conn =
   | { kind: "idle" }
@@ -33,7 +33,8 @@ type Conn =
   | { kind: "connecting"; peerId: string }
   | { kind: "connected"; peerId: string };
 
-type VideoState = "none" | "requesting" | "incoming" | "active";
+// "starting": our camera is opening (permission prompt) after a yes.
+type VideoState = "none" | "requesting" | "incoming" | "starting" | "active";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 // After an accept, how long the data channel gets to open before we give up.
@@ -41,6 +42,7 @@ const CONNECT_TIMEOUT_MS = 25_000;
 const TOAST_MS = 3_800;
 const TYPING_SHOW_MS = 3_000;
 const TYPING_SEND_EVERY_MS = 2_000;
+const VIDEO_REQUEST_TIMEOUT_MS = 30_000;
 
 export default function Home() {
   const [phase, setPhase] = useState<"gate" | "live">("gate");
@@ -91,6 +93,7 @@ export default function Home() {
   const toastId = useRef(0);
   const requestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const videoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSent = useRef(0);
   const soundRef = useRef(soundOn);
@@ -159,7 +162,15 @@ export default function Home() {
   function startPeer(peerId: string, initiator: boolean) {
     const ps = new PeerSession(initiator, {
       onSignal: (type: DescType, payload: string) => {
-        void signal(peerId, type, payload);
+        void signal(peerId, type, payload).then((status) => {
+          // A rejected offer/answer means video can't (re)negotiate in this
+          // chat — say so rather than hang on "Waiting for their camera…".
+          if (status === 400 && type !== "ice" && peerRef.current === ps) {
+            ps.stopVideo();
+            clearVideo();
+            notify("Video couldn't start in this chat — reconnect to try again.", "warn");
+          }
+        });
       },
       onChat: (text) => {
         if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -217,26 +228,25 @@ export default function Home() {
         if (videoRef.current === "none") {
           setVideo("incoming");
           cue(chime);
+        } else if (videoRef.current === "requesting") {
+          // We both asked at the same moment: that's a yes from both sides.
+          openCamera(false);
         }
         break;
       case "video-accept":
-        if (videoRef.current === "requesting" && ps) {
-          ps.startVideo()
-            .then((stream) => {
-              setLocalStream(stream);
-              setVideo("active");
-            })
-            .catch(() => {
-              setVideo("none");
-              ps.sendControl("video-end");
-              notify("Your camera isn't available.", "warn");
-            });
-        }
+        if (videoRef.current === "requesting") openCamera(false);
         break;
       case "video-decline":
         if (videoRef.current === "requesting") {
-          setVideo("none");
+          clearVideo();
           notify(`${name} would rather just chat.`);
+        }
+        break;
+      case "video-unavailable":
+        ps?.stopVideo();
+        if (videoRef.current !== "none") {
+          clearVideo();
+          notify(`${name}'s camera isn't available.`);
         }
         break;
       case "video-end":
@@ -255,9 +265,38 @@ export default function Home() {
     }
   }
 
+  // Open our camera after a yes — theirs (we asked) or ours (they asked,
+  // `answer` = true: tell them once it's on). The result is re-checked: if
+  // the call or the video ended while the permission prompt was open, the
+  // camera is released instead of left running.
+  function openCamera(answer: boolean) {
+    const ps = peerRef.current;
+    if (!ps) return;
+    if (videoTimer.current) clearTimeout(videoTimer.current);
+    setVideo("starting");
+    ps.startVideo()
+      .then((stream) => {
+        if (peerRef.current !== ps || videoRef.current !== "starting") {
+          ps.stopVideo();
+          return;
+        }
+        setLocalStream(stream);
+        if (answer) ps.sendControl("video-accept");
+        setVideo("active");
+      })
+      .catch(() => {
+        if (peerRef.current !== ps || videoRef.current !== "starting") return;
+        ps.sendControl("video-unavailable");
+        clearVideo();
+        notify("Your camera isn't available.", "warn");
+      });
+  }
+
   // Back to a text-only conversation (or nothing): no streams, everything
-  // frosted again for next time.
+  // frosted again for next time. Every way out of a video call comes here,
+  // so a reveal can never carry over into the next one.
   function clearVideo() {
+    if (videoTimer.current) clearTimeout(videoTimer.current);
     setLocalStream(null);
     setRemoteStream(null);
     setMicOn(true);
@@ -330,7 +369,7 @@ export default function Home() {
     const session = sessionRef.current;
     if (!session) return;
     void block(session.token, peerId);
-    teardown(`${handleFor(peerId)} is blocked — you won't see each other again.`);
+    teardown(`${handleFor(peerId)} is blocked — you won't see each other again this session.`);
   }
 
   function sendChat(text: string) {
@@ -347,30 +386,36 @@ export default function Home() {
   }
 
   function startVideoRequest() {
-    if (videoRef.current !== "none" || !peerRef.current) return;
+    const ps = peerRef.current;
+    const c = connRef.current;
+    if (videoRef.current !== "none" || !ps || c.kind !== "connected") return;
     setVideo("requesting");
-    peerRef.current.sendControl("video-request");
+    ps.sendControl("video-request");
+    // No answer → give up, and dismiss their prompt.
+    videoTimer.current = setTimeout(() => {
+      if (videoRef.current !== "requesting" || peerRef.current !== ps) return;
+      ps.sendControl("video-end");
+      clearVideo();
+      notify(`No answer from ${handleFor(c.peerId)} — still just chatting.`);
+    }, VIDEO_REQUEST_TIMEOUT_MS);
+  }
+
+  function cancelVideoRequest() {
+    if (videoRef.current !== "requesting") return;
+    peerRef.current?.sendControl("video-end");
+    clearVideo();
   }
 
   function acceptVideo() {
-    const ps = peerRef.current;
-    if (!ps) return;
-    ps.startVideo()
-      .then((stream) => {
-        setLocalStream(stream);
-        ps.sendControl("video-accept");
-        setVideo("active");
-      })
-      .catch(() => {
-        ps.sendControl("video-decline");
-        setVideo("none");
-        notify("Your camera isn't available.", "warn");
-      });
+    // Guarded: a double-click (or Enter held down) opens one camera.
+    if (videoRef.current !== "incoming") return;
+    openCamera(true);
   }
 
   function declineVideo() {
+    if (videoRef.current !== "incoming") return;
     peerRef.current?.sendControl("video-decline");
-    setVideo("none");
+    clearVideo();
   }
 
   function endVideo() {
@@ -404,11 +449,20 @@ export default function Home() {
     const name = handleFor(sig.fromId);
     switch (sig.type) {
       case "request": {
-        if (connRef.current.kind === "idle") {
+        const c = connRef.current;
+        if (c.kind === "idle") {
           setConn({ kind: "incoming", peerId: sig.fromId });
           cue(chime);
+        } else if (c.kind === "requesting" && c.peerId === sig.fromId) {
+          // We tapped each other at the same moment: a yes from both sides.
+          if (requestTimer.current) clearTimeout(requestTimer.current);
+          startPeer(sig.fromId, false);
+          void signal(sig.fromId, "accept");
+          setConn({ kind: "connecting", peerId: sig.fromId });
+          notify(`You and ${name} reached out at the same time ✨`);
         } else {
-          void signal(sig.fromId, "decline");
+          // Busy right now: "not now" (no cooldown), not a "no".
+          void signal(sig.fromId, "end");
         }
         break;
       }
@@ -452,7 +506,7 @@ export default function Home() {
         const c = connRef.current;
         if (c.kind !== "idle" && c.peerId === sig.fromId) {
           if (c.kind === "incoming") setConn({ kind: "idle" });
-          else if (c.kind === "requesting") teardown(`${name} is no longer around.`);
+          else if (c.kind === "requesting") teardown(`${name} isn't available right now.`);
           else teardown(`${name} left the conversation.`);
         }
         break;
@@ -542,7 +596,6 @@ export default function Home() {
   }, [ringing]);
 
   async function handleReady(lat: number, lng: number) {
-    unlockAudio();
     sessionRef.current = await join(lat, lng);
     setMyId(sessionRef.current.id);
     locationRef.current = { lat, lng };
@@ -623,28 +676,22 @@ export default function Home() {
               messages={messages}
               connected={conn.kind === "connected"}
               peerTyping={peerTyping}
-              videoBusy={video !== "none"}
+              video={video}
+              hidden={video === "active"}
               onSend={sendChat}
               onTyping={sendTyping}
               onStartVideo={startVideoRequest}
+              onCancelVideo={cancelVideoRequest}
               onEnd={endConnection}
               onBlock={() => blockPeer(conn.peerId)}
             />
-          )}
-
-          {inChat && video === "requesting" && (
-            <div className="pointer-events-none absolute inset-x-0 top-20 z-40 flex justify-center px-4 sm:top-24">
-              <p className="glass animate-pop rounded-full px-4 py-2.5 text-sm text-white/85">
-                Asking {handleFor(conn.peerId)} to turn on video…
-              </p>
-            </div>
           )}
 
           {inChat && video === "incoming" && (
             <IncomingCall
               kind="video"
               peerId={conn.peerId}
-              note="Both cameras turn on only if you accept. You can switch yours off any time."
+              note="Video starts frosted for both of you — faces only clear once you both tap Reveal."
               onAccept={acceptVideo}
               onDecline={declineVideo}
             />

@@ -13,6 +13,10 @@ export const SESSION_GRACE_MS = 120_000;
 // Orphan signals (mailbox messages never drained) are cleaned up after this.
 export const SIGNAL_TTL_MS = 60_000;
 
+// A pending connection request expires on the server after this. The client
+// gives up (and withdraws) at 30s; this covers a withdraw that got lost.
+export const REQUEST_TTL_MS = 35_000;
+
 // Client poll interval. Kept here so client + server reason about the same cadence.
 export const POLL_INTERVAL_MS = 1_500;
 

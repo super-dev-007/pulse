@@ -1,6 +1,8 @@
 import type { SignalType } from "@/lib/types";
 
-const MAX_SDP = 32 * 1024;
+// Each video call in one chat adds ~7 KB of (idle) media sections to the
+// session description (see PeerSession.stopVideo); 128 KB allows ~16 calls.
+const MAX_SDP = 128 * 1024;
 const MAX_CANDIDATE = 1024;
 
 // Returns the canonical payload to store (null for control signals), or

@@ -47,15 +47,15 @@ export async function POST(request: NextRequest) {
     await notify(me.id, toId, "end");
   }
   if (me.outgoingTo === toId) {
-    await prisma.presence.update({
-      where: { id: me.id },
-      data: { outgoingTo: null },
+    await prisma.presence.updateMany({
+      where: { id: me.id, outgoingTo: toId },
+      data: { outgoingTo: null, outgoingAt: null },
     });
     await notify(me.id, toId, "end");
   }
   const theirs = await prisma.presence.updateMany({
     where: { id: toId, outgoingTo: me.id },
-    data: { outgoingTo: null },
+    data: { outgoingTo: null, outgoingAt: null },
   });
   if (theirs.count > 0) await notify(me.id, toId, "decline");
 

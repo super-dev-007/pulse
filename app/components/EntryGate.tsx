@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Loader2, MapPinOff } from "lucide-react";
 import Wordmark from "./Wordmark";
+import { unlockAudio } from "@/lib/sound";
 
 const PROMISES = [
   "No sign-up",
@@ -23,6 +24,9 @@ export default function EntryGate({
   const online = useOnlineCount();
 
   function enter() {
+    // Inside the click itself: Safari only lets audio start from a gesture,
+    // and the geolocation callback that follows no longer counts as one.
+    unlockAudio();
     if (!("geolocation" in navigator)) {
       setStatus("error");
       setError("Your browser doesn't support location access.");

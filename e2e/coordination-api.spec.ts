@@ -488,3 +488,94 @@ test.describe("blocking (safety)", () => {
     expect(peerOf(await a.poll(), b)).toBeTruthy();
   });
 });
+
+test.describe("request edge cases", () => {
+  test("two people tapping each other at once get connected", async ({
+    request,
+  }) => {
+    const [a, b, observer] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), observer.join()]);
+
+    expect(await a.signal(b.id, "request")).toBe(200);
+    expect(await b.signal(a.id, "request")).toBe(200); // crossing: not declined
+    expect(signalsFrom(await a.poll(), b)).toEqual([]); // a isn't turned down
+    // b's client sees a's request and takes it as a yes.
+    expect(signalsFrom(await b.poll(), a)).toEqual(["request"]);
+    expect(await b.signal(a.id, "accept")).toBe(200);
+    expect(signalsFrom(await a.poll(), b)).toEqual(["accept"]);
+    const seen = await observer.poll();
+    expect(peerOf(seen, a)?.busy).toBe(true);
+    expect(peerOf(seen, b)?.busy).toBe(true);
+  });
+
+  test("someone mid-request reads as busy, with no cooldown after", async ({
+    request,
+  }) => {
+    const [a, b, c] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), c.join()]);
+
+    await a.signal(b.id, "request"); // a is waiting on b
+    expect(await c.signal(a.id, "request")).toBe(200);
+    expect(signalsFrom(await c.poll(), a)).toEqual(["decline"]); // auto
+    expect(signalsFrom(await a.poll(), c)).toEqual([]); // a never prompted
+
+    await a.signal(b.id, "end"); // a gives up on b
+    expect(await c.signal(a.id, "request")).toBe(200);
+    expect(signalsFrom(await a.poll(), c)).toEqual(["request"]); // no cooldown
+  });
+
+  test("someone with another request open reads as busy", async ({ request }) => {
+    const [a, b, c] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), c.join()]);
+
+    await a.signal(b.id, "request"); // b has a's prompt open
+    expect(await c.signal(b.id, "request")).toBe(200);
+    expect(signalsFrom(await c.poll(), b)).toEqual(["decline"]);
+    expect(signalsFrom(await b.poll(), c)).toEqual([]);
+  });
+
+  test("a busy client's 'not now' carries no cooldown", async ({ request }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll();
+    expect(await b.signal(a.id, "end")).toBe(200); // "not now", not "no"
+    expect(signalsFrom(await a.poll(), b)).toEqual(["end"]);
+
+    expect(await a.signal(b.id, "request")).toBe(200);
+    expect(signalsFrom(await b.poll(), a)).toEqual(["request"]);
+  });
+
+  test("requests expire on the server: a lost withdraw can't lock anyone", async ({
+    request,
+  }) => {
+    test.setTimeout(75_000);
+    const [a, b, c] = [user(request), user(request), user(request)];
+    await Promise.all([a.join(), b.join(), c.join()]);
+
+    await a.signal(b.id, "request");
+    await b.poll(); // b sees the prompt; a's withdraw gets lost
+    const toA: string[] = [];
+    const toB: string[] = [];
+    // Everyone keeps polling until the 35s request lifetime runs out and the
+    // server has told both sides (capped at 50s).
+    const until = Date.now() + 50_000;
+    while (Date.now() < until && !(toA.includes("end") && toB.includes("end"))) {
+      const [ra, rb] = await Promise.all([a.poll(), b.poll(), c.poll()]);
+      toA.push(...signalsFrom(ra, b));
+      toB.push(...signalsFrom(rb, a));
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+    // The server expired the request and told both sides.
+    expect(toA).toContain("end"); // a: no longer waiting
+    expect(toB).toContain("end"); // b: prompt dismissed
+
+    // Too late to accept now: b is told, nobody is paired.
+    await b.signal(a.id, "accept");
+    expect(signalsFrom(await b.poll(), a)).toContain("end");
+    // And a can ask someone else (instead of a 409 forever).
+    expect(await a.signal(c.id, "request")).toBe(200);
+    expect(signalsFrom(await c.poll(), a)).toEqual(["request"]);
+  });
+});

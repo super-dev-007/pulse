@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // Sessions are issued by the server as a pair:
@@ -35,13 +34,6 @@ export async function findSession(token: string | null) {
 
 export function unauthorized(): Response {
   return Response.json({ error: "unknown session" }, { status: 401 });
-}
-
-// Prisma's "record to update/delete not found".
-export function isNotFound(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025"
-  );
 }
 
 const UUID_RE =

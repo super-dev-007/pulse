@@ -20,8 +20,8 @@ export default function RequestCard({
   const r = 26;
   const c = 2 * Math.PI * r;
   return (
-    <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:pb-8">
-      <div className="glass flex w-full max-w-md animate-sheet items-center gap-4 rounded-3xl p-4">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:pb-8">
+      <div className="glass pointer-events-auto flex w-full max-w-md animate-sheet items-center gap-4 rounded-3xl p-4">
         <div className="relative grid h-[60px] w-[60px] shrink-0 place-items-center">
           <svg viewBox="0 0 60 60" className="absolute inset-0 -rotate-90">
             <circle cx="30" cy="30" r={r} fill="none" stroke="rgb(255 255 255 / 0.08)" strokeWidth="3" />
@@ -53,7 +53,7 @@ export default function RequestCard({
               <span className="typing-dot">.</span>
             </span>
           </p>
-          <p className="truncate text-sm text-white/50">{detail}</p>
+          <p className="line-clamp-2 text-sm text-white/50">{detail}</p>
         </div>
         <button
           onClick={onCancel}

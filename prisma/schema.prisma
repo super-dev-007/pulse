@@ -19,6 +19,7 @@ model Presence {
   busy       Boolean  @default(false) // true while in an active connection
   partnerId  String? // who they're connected to while busy
   outgoingTo String? // who they have a pending connection request with
+  outgoingAt DateTime? // when that request was sent (it expires)
   lastSeen   DateTime
 
   @@index([lastSeen])

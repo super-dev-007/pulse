@@ -35,10 +35,12 @@ export default function ChatPanel({
   messages,
   connected,
   peerTyping,
-  videoBusy,
+  video,
+  hidden,
   onSend,
   onTyping,
   onStartVideo,
+  onCancelVideo,
   onEnd,
   onBlock,
 }: {
@@ -47,10 +49,12 @@ export default function ChatPanel({
   messages: ChatMessage[];
   connected: boolean;
   peerTyping: boolean;
-  videoBusy: boolean;
+  video: "none" | "requesting" | "incoming" | "starting" | "active";
+  hidden: boolean; // under the video stage: out of the tab order
   onSend: (text: string) => void;
   onTyping: () => void;
   onStartVideo: () => void;
+  onCancelVideo: () => void;
   onEnd: () => void;
   onBlock: () => void;
 }) {
@@ -82,6 +86,7 @@ export default function ChatPanel({
   return (
     <section
       aria-label={`Chat with ${name}`}
+      inert={hidden}
       className="surface absolute inset-x-0 bottom-0 z-30 flex h-[76dvh] animate-sheet flex-col rounded-t-[28px] md:inset-x-auto md:top-24 md:right-5 md:bottom-5 md:h-auto md:w-[400px] md:rounded-[28px]"
     >
       <div className="mx-auto mt-2.5 h-1 w-10 rounded-full bg-white/15 md:hidden" />
@@ -115,7 +120,7 @@ export default function ChatPanel({
         </button>
         <button
           onClick={onStartVideo}
-          disabled={!connected || videoBusy}
+          disabled={!connected || video !== "none"}
           aria-label="Start video"
           title="Start video"
           className="grid h-11 w-11 place-items-center rounded-full bg-white/8 text-white/85 transition hover:bg-white/15 hover:text-white disabled:opacity-35"
@@ -150,6 +155,28 @@ export default function ChatPanel({
           >
             Block
           </button>
+        </div>
+      )}
+
+      {(video === "requesting" || video === "starting") && (
+        <div
+          role="status"
+          className="flex animate-rise items-center gap-3 border-b border-white/[0.06] bg-sky/[0.06] px-5 py-3 text-sm"
+        >
+          <Video className="h-4 w-4 shrink-0 text-sky" />
+          <p className="flex-1 text-white/75">
+            {video === "requesting"
+              ? `Asking ${name} to turn on video…`
+              : "Starting your camera — frosted until you both reveal."}
+          </p>
+          {video === "requesting" && (
+            <button
+              onClick={onCancelVideo}
+              className="rounded-full px-3 py-1.5 text-white/60 transition hover:text-white"
+            >
+              Cancel
+            </button>
+          )}
         </div>
       )}
 
@@ -201,7 +228,9 @@ export default function ChatPanel({
       </div>
 
       {connected && messages.length === 0 && (
-        <div className="flex gap-2 overflow-x-auto px-4 pb-3">
+        // A swipeable row on phones; wrapped on desktop, where sideways
+        // scrolling with a mouse isn't obvious.
+        <div className="flex gap-2 overflow-x-auto px-4 pb-3 md:flex-wrap md:overflow-visible">
           {openers.map((o) => (
             <button
               key={o}
