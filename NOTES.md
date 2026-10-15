@@ -9,7 +9,7 @@
 - Order: **1 → 3 → 2 → 4**. Security changes the API the UI sits on, so the redesign was built on the final API.
 - For server bugs: reproduce with a test, fix, keep the test. **37 Playwright tests**: API/state-machine/security, two-browser E2Es (fake camera, five video calls in one chat), and a pixel-level Mutual Reveal test. `npm run test:e2e`. The browser tests also pass against the live deployment (`E2E_BASE_URL=https://pulse-cyan-phi.vercel.app`).
 - Once the real map was available, the two-browser test caught three more connection races (a quick call-back killed by the previous call's hang-up, out-of-order signals, silently ignored taps). A screenshot review of the whole journey caught five visual issues. All are fixed in #4.
-- **Final review pass:** two independent reviewers (server / client) audited everything A to Z. Their verified findings are fixed in [#6](https://github.com/super-dev-007/pulse/pull/6), each with a test where it can be reproduced — see below.
+- **Final review pass:** two independent reviewers (server / client) audited everything A to Z. Their verified findings are fixed in [#6](https://github.com/super-dev-007/pulse/pull/6), each with a test where it can be reproduced. Then I re-ran the browser tests against production, which caught serverless-specific hangs, fixed in [#7](https://github.com/super-dev-007/pulse/pull/7) — see below.
 
 ## Phase 1 — Make it run
 **How I found them:** I traced one connection end to end (presence → request/accept → SDP/ICE through the mailbox → data channel), then reproduced each server bug as an API test. I also re-introduced bug 1 to confirm its test fails on the original code.
@@ -76,6 +76,10 @@ Reviewed as an attacker who can see the map and call the API directly. Ranked by
 - **Privacy:** IP keys are HMAC'd (a plain hash of IPv4 is reversible); offsets use crypto randomness; a returning session past its grace period is refused; cleanup also runs from the landing page plus a daily Vercel cron, so nothing lingers when there's no traffic.
 - **Stuck video requests:** both asking at once is a yes from both sides; unanswered requests time out and can be cancelled.
 - **Accessibility and overlaps:** the incoming-call dialog stole focus every poll (Enter could accept instead of block); it now focuses once and traps Tab. Plus fixes for the popover hidden under the chat, sticky hover cards on touch, and the globe not draggable behind the bottom cards.
+
+**Production resilience (#7), found by testing the live deployment:**
+- **Requests that never answered.** A join got no response for minutes, and connections stalled on "Connecting…". Vercel freezes instances between requests, and a pooled Postgres connection can die while frozen. The pg pool now has connect/query timeouts, keep-alive and a short idle lifetime, and the client has deadlines on join/poll, so a dead connection fails fast and the retry succeeds.
+- **People on the map don't wait for tiles.** Dots appear at Mapbox's `style.load`, not `load`, so a few failed tile requests can't leave the globe empty.
 
 ## Assumptions & trade-offs
 - **Polling, not WebSockets** (brief: Vercel serverless). Per-poll DB work trimmed: cleanup is swept per instance at most every 10s.
