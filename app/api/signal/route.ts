@@ -132,6 +132,18 @@ async function handleRequest(me: Me, toId: string) {
     await deliver(toId, me.id, "decline");
     return ok({ autoDeclined: true });
   }
+  // A request opens a fresh exchange between the two of us. Anything still
+  // undelivered between us belongs to an earlier one — e.g. the hang-up
+  // `end` from a call that just finished — and would be misread as an answer
+  // to this request ("no longer around"), killing it.
+  await prisma.signal.deleteMany({
+    where: {
+      OR: [
+        { fromId: me.id, toId },
+        { fromId: toId, toId: me.id },
+      ],
+    },
+  });
   await prisma.presence.update({
     where: { id: me.id },
     data: { outgoingTo: toId },

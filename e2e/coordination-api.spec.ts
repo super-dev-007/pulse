@@ -198,6 +198,23 @@ test.describe("presence and connections", () => {
     expect(peerOf(await observer.poll(), b)?.busy).toBe(false);
   });
 
+  test("a quick re-request isn't killed by the last call's hang-up", async ({
+    request,
+  }) => {
+    const [a, b] = [user(request), user(request)];
+    await Promise.all([a.join(), b.join()]);
+    await connect(a, b);
+
+    // a hangs up; before b's next poll picks up that `end`, b calls back.
+    expect(await a.signal(b.id, "end")).toBe(200);
+    expect(await b.signal(a.id, "request")).toBe(200);
+
+    // b doesn't get the stale `end` (it'd read it as "a is gone"), and a gets
+    // the fresh request.
+    expect(signalsFrom(await b.poll(), a)).toEqual([]);
+    expect(signalsFrom(await a.poll(), b)).toEqual(["request"]);
+  });
+
   test("requests to a busy user are auto-declined", async ({ request }) => {
     const [a, b, c] = [user(request), user(request), user(request)];
     await Promise.all([a.join(), b.join(), c.join()]);
