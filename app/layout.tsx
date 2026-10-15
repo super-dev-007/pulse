@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { connection } from "next/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,11 +18,14 @@ export const metadata: Metadata = {
   description: "A living globe of anonymous strangers. Tap a dot, start talking.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Render per request so Next can stamp this request's CSP nonce (set in
+  // proxy.ts) on its scripts — a prerendered page would carry no nonce.
+  await connection();
   return (
     <html
       lang="en"

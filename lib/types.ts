@@ -26,8 +26,14 @@ export interface SignalMsg {
   createdAt: string;
 }
 
+export interface JoinResponse {
+  id: string; // public session id — what other users see
+  token: string; // secret — authenticates every other call
+  lat: number; // where others see our dot (privacy-offset)
+  lng: number;
+}
+
 export interface PollResponse {
-  present: boolean; // false → the caller's presence row is gone; re-join
   peers: PeerDot[];
   signals: SignalMsg[];
 }

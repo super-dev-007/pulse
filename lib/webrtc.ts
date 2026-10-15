@@ -1,9 +1,18 @@
 export type DescType = "offer" | "answer" | "ice";
-export type PeerControl =
-  | "video-request"
-  | "video-accept"
-  | "video-decline"
-  | "video-end";
+const CONTROLS = [
+  "video-request",
+  "video-accept",
+  "video-decline",
+  "video-end",
+] as const;
+export type PeerControl = (typeof CONTROLS)[number];
+
+// The data channel is peer-to-peer, so whatever arrives on it comes straight
+// from a stranger's client. Bound it before it reaches the UI.
+export const MAX_CHAT_LENGTH = 1_000;
+const MAX_FRAME_BYTES = 8 * 1024;
+const MAX_MESSAGES_PER_WINDOW = 20; // per INBOUND_WINDOW_MS
+const INBOUND_WINDOW_MS = 5_000;
 
 interface PeerCallbacks {
   onSignal: (type: DescType, payload: string) => void;
@@ -30,6 +39,7 @@ export class PeerSession {
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private signalChain: Promise<void> = Promise.resolve();
+  private inboundAt: number[] = [];
 
   constructor(initiator: boolean, cb: PeerCallbacks) {
     this.cb = cb;
@@ -83,15 +93,31 @@ export class PeerSession {
       if (!this.closed) this.cb.onChannelClose();
     };
     dc.onmessage = (e) => {
+      if (typeof e.data !== "string" || e.data.length > MAX_FRAME_BYTES) return;
+      if (!this.withinInboundRate()) return;
       try {
-        const msg = JSON.parse(e.data as string);
-        if (msg.t === "chat" && typeof msg.text === "string") {
+        const msg = JSON.parse(e.data);
+        if (
+          msg.t === "chat" &&
+          typeof msg.text === "string" &&
+          msg.text.length <= MAX_CHAT_LENGTH
+        ) {
           this.cb.onChat(msg.text);
-        } else if (msg.t === "ctrl" && typeof msg.ctrl === "string") {
-          this.cb.onControl(msg.ctrl as PeerControl);
+        } else if (msg.t === "ctrl" && CONTROLS.includes(msg.ctrl)) {
+          this.cb.onControl(msg.ctrl);
         }
       } catch {}
     };
+  }
+
+  // Sliding window over inbound messages: a flooding peer gets dropped
+  // instead of freezing the chat.
+  private withinInboundRate(): boolean {
+    const now = Date.now();
+    this.inboundAt = this.inboundAt.filter((t) => now - t < INBOUND_WINDOW_MS);
+    if (this.inboundAt.length >= MAX_MESSAGES_PER_WINDOW) return false;
+    this.inboundAt.push(now);
+    return true;
   }
 
   // Signals arrive in batches from the poll loop. Handled concurrently, an ICE
@@ -150,7 +176,7 @@ export class PeerSession {
   }
 
   sendChat(text: string) {
-    this.safeSend({ t: "chat", text });
+    this.safeSend({ t: "chat", text: text.slice(0, MAX_CHAT_LENGTH) });
   }
 
   sendControl(ctrl: PeerControl) {

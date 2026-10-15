@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { MAX_CHAT_LENGTH } from "@/lib/webrtc";
 
 export interface ChatMessage {
   id: number;
@@ -92,6 +93,7 @@ export default function ChatPanel({
       <form onSubmit={submit} className="flex gap-2 border-t border-zinc-800 p-3">
         <input
           value={draft}
+          maxLength={MAX_CHAT_LENGTH}
           onChange={(e) => setDraft(e.target.value)}
           placeholder={connected ? "Type a message…" : "Connecting…"}
           disabled={!connected}

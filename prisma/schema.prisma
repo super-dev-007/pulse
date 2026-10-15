@@ -12,15 +12,18 @@ datasource db {
 }
 
 model Presence {
-  id        String   @id // client-generated session uuid
+  id        String   @id // public session id (server-generated uuid) — safe to share
+  tokenHash String   @unique // SHA-256 of the secret session token
   lat       Float // ALREADY privacy-offset coords (raw is never stored)
   lng       Float
-  busy      Boolean  @default(false) // true while in an active connection
-  partnerId String? // who they're connected to while busy
-  lastSeen  DateTime
+  busy       Boolean  @default(false) // true while in an active connection
+  partnerId  String? // who they're connected to while busy
+  outgoingTo String? // who they have a pending connection request with
+  lastSeen   DateTime
 
   @@index([lastSeen])
   @@index([partnerId])
+  @@index([outgoingTo])
 }
 
 model Signal {
@@ -33,4 +36,28 @@ model Signal {
   createdAt DateTime @default(now())
 
   @@index([toId])
+}
+
+// Pairwise "blocked may not send blocker a request" until expiresAt — e.g. a
+// cooldown after a decline, so nobody can re-ask someone who just said no.
+// Deleted along with either session.
+model Block {
+  blockerId String
+  blockedId String
+  expiresAt DateTime
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+  @@index([expiresAt])
+}
+
+// Fixed-window rate-limit counters. They live in Postgres because serverless
+// instances share no memory: an in-process limiter would reset on every cold
+// start and multiply by the number of instances.
+model RateLimit {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
 }
