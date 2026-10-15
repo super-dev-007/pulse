@@ -42,9 +42,9 @@ export default function IncomingCall({
         className="glass w-full max-w-sm animate-pop rounded-[32px] px-7 pt-9 pb-7 text-center"
       >
         <div className="ringing relative mx-auto mb-6 grid h-24 w-24 place-items-center text-pulse/70">
-          <span />
-          <span />
-          <span />
+          <span className="ring-wave" />
+          <span className="ring-wave" />
+          <span className="ring-wave" />
           <Orb id={peerId} size={96} />
           {kind === "video" && (
             <span className="absolute -right-1 -bottom-1 grid h-9 w-9 place-items-center rounded-full border-4 border-night bg-pulse text-white">

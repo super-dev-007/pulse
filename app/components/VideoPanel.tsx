@@ -79,9 +79,9 @@ export default function VideoPanel({
         <div className="absolute inset-0 grid place-items-center">
           <div className="text-center">
             <div className="ringing relative mx-auto mb-5 grid h-24 w-24 place-items-center text-pulse/60">
-              <span />
-              <span />
-              <span />
+              <span className="ring-wave" />
+              <span className="ring-wave" />
+              <span className="ring-wave" />
               <Orb id={peerId} size={96} />
             </div>
             <p className="text-white/60">Waiting for {name}&rsquo;s camera…</p>

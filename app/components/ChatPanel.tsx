@@ -82,7 +82,7 @@ export default function ChatPanel({
   return (
     <section
       aria-label={`Chat with ${name}`}
-      className="glass absolute inset-x-0 bottom-0 z-30 flex h-[76dvh] animate-sheet flex-col rounded-t-[28px] md:inset-x-auto md:top-24 md:right-5 md:bottom-5 md:h-auto md:w-[400px] md:rounded-[28px]"
+      className="surface absolute inset-x-0 bottom-0 z-30 flex h-[76dvh] animate-sheet flex-col rounded-t-[28px] md:inset-x-auto md:top-24 md:right-5 md:bottom-5 md:h-auto md:w-[400px] md:rounded-[28px]"
     >
       <div className="mx-auto mt-2.5 h-1 w-10 rounded-full bg-white/15 md:hidden" />
 
@@ -94,12 +94,12 @@ export default function ChatPanel({
             {connected ? (
               <>
                 <Lock className="h-3 w-3 text-mint" />
-                Peer-to-peer · not stored
+                Live · private
               </>
             ) : (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" />
-                Connecting privately…
+                Connecting…
               </>
             )}
           </p>
